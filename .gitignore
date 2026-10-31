@@ -1,0 +1,7 @@
+node_modules/
+robo/dist/
+.clasp.json
+*.log
+__pycache__/
+_teste/
+CLAUDE.md

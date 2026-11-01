@@ -33,6 +33,7 @@ function doPost(e) {
     lock.waitLock(15000);
     var req = JSON.parse(e.postData.contents);
     if (req.a === 'subscribe') return json_(subscribe_(req));
+    if (req.a === 'purge') return json_(purge_(req));
     var dev = authDevice_(req);
     if (!dev) return json_({ ok: false, error: 'aparelho nao autorizado', code: 'auth' });
     if (req.a === 'prefs') return json_(savePrefs_(dev, req));
@@ -127,20 +128,38 @@ function cleanPrefs_(req, d) {
   return d;
 }
 
+function checkPin_(req) {
+  var p = props_();
+  if (!/^\d{6}$/.test(String(req.pin || ''))) return { ok: false, error: 'Digite o PIN', code: 'pin' };
+  var until = Number(p.getProperty('pinLockUntil') || 0);
+  if (Date.now() < until) return { ok: false, error: 'PIN bloqueado por 15 minutos', code: 'locked' };
+  if (String(req.pin) !== p.getProperty('pin')) {
+    var fails = Number(p.getProperty('pinFails') || 0) + 1;
+    p.setProperty('pinFails', String(fails));
+    if (fails >= 10) p.setProperties({ pinFails: '0', pinLockUntil: String(Date.now() + 15 * 60000) });
+    return { ok: false, error: 'PIN incorreto', code: 'pin' };
+  }
+  p.setProperty('pinFails', '0');
+  return null;
+}
+
+// Manutencao: remove todos os aparelhos. Cada um liga de novo com o PIN.
+function purge_(req) {
+  var denied = checkPin_(req);
+  if (denied) return denied;
+  var ids = deviceIds_();
+  ids.forEach(deleteDevice_);
+  props_().deleteProperty('plan');
+  props_().deleteProperty('queue');
+  return { ok: true, removed: ids.length };
+}
+
 function subscribe_(req) {
   var p = props_();
   var existing = req.id && req.secret ? authDevice_(req) : null;
   if (!existing) {
-    if (!/^\d{6}$/.test(String(req.pin || ''))) return { ok: false, error: 'Digite o PIN', code: 'pin' };
-    var until = Number(p.getProperty('pinLockUntil') || 0);
-    if (Date.now() < until) return { ok: false, error: 'PIN bloqueado por 15 minutos', code: 'locked' };
-    if (String(req.pin) !== p.getProperty('pin')) {
-      var fails = Number(p.getProperty('pinFails') || 0) + 1;
-      p.setProperty('pinFails', String(fails));
-      if (fails >= 10) p.setProperties({ pinFails: '0', pinLockUntil: String(Date.now() + 15 * 60000) });
-      return { ok: false, error: 'PIN incorreto', code: 'pin' };
-    }
-    p.setProperty('pinFails', '0');
+    var denied = checkPin_(req);
+    if (denied) return denied;
   }
   var s = req.sub || {};
   if (!PUSH_HOSTS.test(String(s.endpoint || '')) || !s.keys || !s.keys.p256dh || !s.keys.auth) {
@@ -292,7 +311,7 @@ function tick() {
     var now = Date.now();
     p.setProperty('lastTick', String(now));
     if (!p.getProperty('vapid')) return;
-    var devices = loadDevices_();
+    var devices = loadDevices_().filter(function (d) { return d.sub; });
     if (!devices.length) return;
 
     var plan = JSON.parse(p.getProperty('plan') || 'null');

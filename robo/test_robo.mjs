@@ -67,6 +67,7 @@ function world() {
     this.__sent = [];
     var __self = this;
     WebPush.encryptPayload = function (t, a, b, c) { __self.__sent.push(JSON.parse(t)); return __self.__real(t, a, b, c); };
+    this.purge_ = purge_;
     this.subscribe_ = subscribe_; this.tick = tick; this.initOnce = function () { return null; };
     this.WebPush = WebPush; this.savePrefs_ = savePrefs_;
   `, ctx);
@@ -280,6 +281,18 @@ t('F1: sessao ja encerrada na primeira leitura nao avisa', () => {
   w.f1.results = [{ position: 1, driver_number: 1 }];
   assert.deepEqual(w.tick(), []);
   w.next(); assert.deepEqual(w.tick(), []);
+});
+
+t('limpeza exige PIN e aparelho morto nao gera vigia', () => {
+  const w = world(); const r = w.register();
+  assert.equal(w.ctx.purge_({ pin: '000000' }).code, 'pin');
+  assert.ok(w.store['dev:' + r.id], 'PIN errado nao apaga');
+  const d = JSON.parse(w.store['dev:' + r.id]); d.sub = null; w.store['dev:' + r.id] = JSON.stringify(d);
+  const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.tick();
+  assert.ok(!w.store.plan && !w.store['g:7'], 'sem aparelho vivo nao le jogos');
+  assert.equal(w.ctx.purge_({ pin: '123456' }).removed, 1);
+  assert.ok(!w.store['dev:' + r.id]);
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

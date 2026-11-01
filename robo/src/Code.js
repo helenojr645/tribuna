@@ -37,10 +37,11 @@ function doPost(e) {
     var req = JSON.parse(e.postData.contents);
     if (req.a === 'subscribe') return json_(subscribe_(req));
     if (req.a === 'purge') return json_(purge_(req));
+    if (req.a === 'ack') return json_(ack_(req));
     var dev = authDevice_(req);
     if (!dev) return json_({ ok: false, error: 'aparelho nao autorizado', code: 'auth' });
     if (req.a === 'prefs') return json_(savePrefs_(dev, req));
-    if (req.a === 'test') return json_(sendTest_(dev));
+    if (req.a === 'test') return json_(sendTest_(dev, req));
     if (req.a === 'unsubscribe') { deleteDevice_(dev.id); return json_({ ok: true }); }
     return json_({ ok: false, error: 'acao desconhecida' });
   } catch (err) {
@@ -110,6 +111,16 @@ function status_() {
     lastError: p.getProperty('lastError') || '',
     fonte: p.getProperty('fonte') || '',
     devices: deviceIds_().length,
+    // Diagnostico sem dado sensivel: nem endereco de push nem id do aparelho saem daqui.
+    aparelhos: loadDevices_().map(function (d) {
+      var f = d.follows || {};
+      return {
+        host: d.sub ? d.sub.endpoint.match(/^https:\/\/([^/]+)/)[1] : '',
+        times: (f.c || []).length, ligas: (f.comp || []).length, f1: !!f.f1, acompanhando: (d.watch || []).length
+      };
+    }),
+    envio: JSON.parse(p.getProperty('lastSend') || 'null'),
+    teste: JSON.parse(p.getProperty('testDiag') || 'null'),
     now: Date.now()
   };
 }
@@ -238,10 +249,33 @@ function savePrefs_(dev, req) {
   return { ok: true };
 }
 
-function sendTest_(dev) {
+function sendTest_(dev, req) {
   if (!dev.sub) return { ok: false, error: 'Assinatura vencida. Abra o app de novo para renovar.' };
-  var r = pushMany_([{ dev: dev, msg: { title: 'Tribuna', body: 'Tudo certo: os avisos estão chegando neste aparelho.', tag: 'teste', url: '#/ajustes' } }]);
-  return { ok: r.sent === 1, sent: r.sent, codes: r.codes, error: r.sent === 1 ? '' : 'O servico de push recusou o envio' };
+  var p = props_();
+  var token = Utilities.getUuid();
+  var msg = { title: 'Tribuna', body: 'Tudo certo: os avisos estão chegando neste aparelho.', tag: 'teste', url: '#/ajustes' };
+  // O aparelho so confirma para a URL deste robo.
+  if (/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(String(req && req.u || ''))) msg.ack = { u: req.u, t: token };
+  p.setProperty('testToken', token);
+  // Da tempo de sair do app ou bloquear a tela, como num aviso de verdade.
+  Utilities.sleep(5000);
+  var r = pushMany_([{ dev: dev, msg: msg }]);
+  p.setProperty('testDiag', JSON.stringify({ at: Date.now(), sent: r.sent, codes: r.codes, erro: r.erro || '', recebido: 0 }));
+  return { ok: r.sent === 1, sent: r.sent, codes: r.codes, error: r.sent === 1 ? '' : 'O servico de push recusou o envio' + (r.erro ? ': ' + r.erro : '') };
+}
+
+// O aparelho avisa que recebeu o teste: separa falha da Apple de falha no iPhone.
+function ack_(req) {
+  var p = props_();
+  if (!req.t || req.t !== p.getProperty('testToken')) return { ok: false };
+  var d = JSON.parse(p.getProperty('testDiag') || '{}');
+  d.recebido = Date.now();
+  d.mostrou = Number(req.mostrou) || 0;
+  d.perm = String(req.perm || '').slice(0, 12);
+  d.v = String(req.v || '').slice(0, 20);
+  d.falha = String(req.falha || '').slice(0, 200);
+  p.setProperty('testDiag', JSON.stringify(d));
+  return { ok: true };
 }
 
 // ---------- Envio ----------
@@ -279,7 +313,7 @@ function pushMany_(items) {
       console.warn('push nao montado: ' + err);
     }
   });
-  var sent = 0, codes = [];
+  var sent = 0, codes = [], erro = '';
   var res;
   try {
     res = UrlFetchApp.fetchAll(reqs);
@@ -290,6 +324,7 @@ function pushMany_(items) {
   res.forEach(function (r, i) {
     var c = r.getResponseCode();
     codes.push(c);
+    if ((c < 200 || c >= 300) && !erro) erro = c + ' ' + r.getContentText().slice(0, 120);
     if (c >= 200 && c < 300) sent++;
     else if (c === 404 || c === 410) {
       // Assinatura morta: guarda o aparelho para o app renovar sem pedir PIN.
@@ -300,7 +335,8 @@ function pushMany_(items) {
     else console.warn('push ' + c + ': ' + r.getContentText().slice(0, 200));
   });
   if (sent) props_().setProperty('lastPush', String(Date.now()));
-  return { sent: sent, codes: codes, retry: retry };
+  props_().setProperty('lastSend', JSON.stringify({ at: Date.now(), sent: sent, codes: codes.slice(0, 10), erro: erro }));
+  return { sent: sent, codes: codes, retry: retry, erro: erro };
 }
 
 // Entrega com fila curta: aviso que falhou por erro temporario tenta de novo por 10 minutos.

@@ -1,5 +1,5 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
-const VERSION = 'tribuna-9';
+const VERSION = 'tribuna-10';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'fontes.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
 const IMG_CACHE = 'tribuna-img';
 
@@ -55,17 +55,35 @@ self.addEventListener('push', (e) => {
         antigos.forEach((n) => n.close());
       } catch (_) {}
     }
-    await self.registration.showNotification(m.title || 'Tribuna', {
-      body: m.body || '',
-      tag: m.tag || undefined,
-      renotify: !!m.tag,
-      requireInteraction: !!m.live && !m.fim,
-      icon: 'icons/icon-192.png',
-      badge: 'icons/badge-96.png',
-      data: { url: m.url || '#/agora' }
-    });
+    let falha = '';
+    try {
+      await self.registration.showNotification(m.title || 'Tribuna', {
+        body: m.body || '',
+        tag: m.tag || undefined,
+        renotify: !!m.tag,
+        requireInteraction: !!m.live && !m.fim,
+        icon: 'icons/icon-192.png',
+        badge: 'icons/badge-96.png',
+        data: { url: m.url || '#/agora' }
+      });
+    } catch (err) { falha = String(err); }
+    if (m.ack) await confirmarTeste(m.ack, falha);
   })());
 });
+
+// So o aviso de teste responde ao robo, para mostrar em que etapa o aviso parou.
+async function confirmarTeste(ack, falha) {
+  try {
+    const mostrou = (await self.registration.getNotifications()).length;
+    const abertas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    abertas.forEach((c) => c.postMessage({ type: 'teste', mostrou, falha }));
+    await fetch(ack.u, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ a: 'ack', t: ack.t, mostrou, falha, perm: Notification.permission, v: VERSION })
+    });
+  } catch (_) {}
+}
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();

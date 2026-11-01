@@ -1377,6 +1377,7 @@ function followsPayload() {
     watch: Object.keys(S.watch).map((id) => ({ g: Number(id), c: S.watch[id].c, m: S.watch[id].m, t: S.watch[id].t }))
   };
 }
+let testeConfirmado = false;
 async function roboPost(body) {
   const r = await fetch(ROBO, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
   return r.json();
@@ -1898,8 +1899,11 @@ const ACTIONS = {
   async pushtest(el) {
     el.disabled = true;
     try {
-      const r = await roboPost({ a: 'test', id: S.device.id, secret: S.device.secret });
-      toast(r.ok ? 'Enviado. Deve chegar em segundos.' : (r.error || 'Falhou'));
+      toast('O aviso sai em 5 segundos. Pode bloquear o iPhone.');
+      testeConfirmado = false;
+      const r = await roboPost({ a: 'test', id: S.device.id, secret: S.device.secret, u: ROBO });
+      if (!r.ok) toast(r.error || 'Falhou');
+      else setTimeout(() => { if (!testeConfirmado) toast('O serviço de avisos aceitou, mas este aparelho ainda não confirmou o recebimento.'); }, 20000);
     } catch (_) { toast('Não consegui falar com o robô'); }
     el.disabled = false;
   },
@@ -2000,6 +2004,10 @@ setInterval(() => { if (!document.hidden) tickRelogios(); }, 1000);
     navigator.serviceWorker.register('sw.js').catch((e) => console.warn('sw', e));
     navigator.serviceWorker.addEventListener('message', (e) => {
       if (e.data && e.data.type === 'open') location.hash = e.data.hash;
+      if (e.data && e.data.type === 'teste') {
+        testeConfirmado = true;
+        toast(e.data.falha ? 'O aviso chegou, mas o aparelho não conseguiu mostrar.' : 'O aviso chegou a este aparelho.');
+      }
     });
   }
   if (!S.onboarded) renderOnboarding();

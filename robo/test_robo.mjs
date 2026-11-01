@@ -35,7 +35,8 @@ function world() {
       DigestAlgorithm: { SHA_256: 'x' },
       computeDigest: (_a, s) => [...crypto.createHash('sha256').update(s).digest()].map((b) => (b > 127 ? b - 256 : b)),
       newBlob: (s) => ({ getBytes: () => (typeof s === 'string' ? [...Buffer.from(s)] : []) }),
-      formatDate: () => '12'
+      formatDate: () => '12',
+      sleep() {}
     },
     UrlFetchApp: {
       fetch(url) {
@@ -80,6 +81,7 @@ function world() {
     this.purge_ = purge_;
     this.subscribe_ = subscribe_; this.tick = tick; this.initOnce = function () { return null; };
     this.WebPush = WebPush; this.savePrefs_ = savePrefs_;
+    this.sendTest_ = sendTest_; this.ack_ = ack_; this.status_ = status_;
   `, ctx);
   const keys = ctx.WebPush.generateVapid();
   store.vapid = JSON.stringify(keys);
@@ -588,6 +590,31 @@ t('fila nao ressuscita cartao velho e modos nao se misturam; Topic no cabecalho'
   assert.equal(novos.length, 1, 'so o mais novo: ' + novos.map((x) => x.title));
   assert.ok(novos[0].title.includes('2 x 0'), novos[0].title);
   assert.ok(!w.store.queue);
+});
+
+t('aviso de teste registra cada etapa sem expor endereco nem aceitar confirmacao falsa', () => {
+  const w = world(); const r = w.register();
+  const dev = JSON.parse(w.store['dev:' + r.id]);
+  const u = 'https://script.google.com/macros/s/AKfy_x-1/exec';
+  w.pushCode = 403;
+  const rec = w.ctx.sendTest_(dev, { u });
+  assert.equal(rec.ok, false);
+  assert.equal(JSON.parse(w.store.testDiag).codes[0], 403);
+  assert.ok(JSON.parse(w.store.lastSend).erro.startsWith('403'));
+  w.pushCode = 200;
+  assert.equal(w.ctx.sendTest_(dev, { u }).ok, true);
+  const msg = w.ctx.__sent[w.ctx.__sent.length - 1];
+  assert.equal(msg.ack.u, u);
+  assert.equal(w.ctx.ack_({ t: 'falso', mostrou: 1 }).ok, false);
+  assert.equal(JSON.parse(w.store.testDiag).recebido, 0);
+  assert.equal(w.ctx.ack_({ t: msg.ack.t, mostrou: 1, perm: 'granted', v: 'tribuna-10' }).ok, true);
+  const st = w.ctx.status_();
+  assert.equal(st.teste.mostrou, 1);
+  assert.equal(st.aparelhos[0].host, 'web.push.apple.com');
+  const txt = JSON.stringify(st);
+  assert.ok(!txt.includes('abc') && !txt.includes(r.secret) && !txt.includes(msg.ack.t));
+  w.ctx.sendTest_(dev, { u: 'https://mau.example/exec' });
+  assert.equal(w.ctx.__sent[w.ctx.__sent.length - 1].ack, undefined, 'so confirma para o robo');
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

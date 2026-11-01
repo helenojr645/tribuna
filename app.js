@@ -296,7 +296,9 @@ function ultimoLance(g) {
   const ev = (g.events || []).filter((e) => e.eventType && [1, 2, 3].includes(e.eventType.id));
   const e = ev[ev.length - 1];
   if (!e) return '';
-  const nome = playerName(g, e.playerId) + (e.gameTimeDisplay ? ' ' + e.gameTimeDisplay : '');
+  // Autor pode demorar a sair na fonte: ate la, vale o time.
+  const time = e.competitorId === g.homeCompetitor.id ? g.homeCompetitor : g.awayCompetitor;
+  const nome = (playerName(g, e.playerId) || time.shortName || time.name) + (e.gameTimeDisplay ? ' ' + e.gameTimeDisplay : '');
   return e.eventType.id === 1 ? `GOL! ${nome}` : e.eventType.id === 3 ? `Vermelho: ${nome}` : `Amarelo: ${nome}`;
 }
 function pressao(g) {
@@ -354,6 +356,8 @@ async function loadWatch() {
   const ids = Object.keys(S.watch);
   await Promise.all(ids.map(async (k) => {
     const id = Number(k);
+    const w0 = S.watch[id];
+    if (w0 && w0.t && Date.now() > w0.t + 10 * 36e5) { delete S.watch[id]; delete R.watchData[id]; save(); syncPrefs(); return; }
     const cache = R.watchData[id];
     if (cache && Date.now() - cache.at < 40000) return;
     try {
@@ -443,6 +447,8 @@ function cartaoAcompanhando(id) {
 }
 function botaoAcompanhar(g, id) {
   if (g.statusGroup === 4 && !S.watch[id]) return '';
+  // Jogo visto so pela reserva nao tem id que o robo reconheca.
+  if (id >= 7e8) return '';
   const on = !!S.watch[id];
   return `<button class="watch-btn ${on ? 'on' : ''}" data-act="watchopen" data-id="${Number(id)}">${ICON_WATCH}<span>${on ? `Acompanhando · ${S.watch[id].m === 'all' ? 'tudo' : 'principais'}` : 'Acompanhar na tela de notificações'}</span></button>`;
 }
@@ -451,7 +457,9 @@ function abrirFolha(id) {
   const g = (d && d.game) || acharJogo(id);
   if (!g) return;
   const st = R.stats[id] || (R.watchData[id] && R.watchData[id].stats);
-  const c = cartaoTexto(g, st);
+  const c = hidden(g)
+    ? { title: `${g.homeCompetitor.shortName || g.homeCompetitor.name} x ${g.awayCompetitor.shortName || g.awayCompetitor.name}`, linhas: ['Placar, posse e chutes aparecem aqui. Acompanhar mostra o resultado, mesmo no modo sem spoiler.'] }
+    : cartaoTexto(g, st);
   const on = S.watch[id];
   const avisos = ROBO && S.device && 'Notification' in window && Notification.permission === 'granted';
   const opcao = (v, t, sub) => `<label class="opcao"><input type="radio" name="modo" value="${v}" ${(on ? on.m : 'main') === v ? 'checked' : ''}><span><b>${t}</b><small>${sub}</small></span></label>`;
@@ -1087,7 +1095,7 @@ function setsOf(g) {
 function spoilNote(id) { return `<div class="empty"><b>Modo sem spoiler</b>Os números ficam escondidos até você revelar.<div style="height:12px"></div><button class="btn" data-act="reveal" data-id="${id}">Mostrar tudo</button></div>`; }
 function playerName(g, id) {
   const m = (g.members || []).find((x) => x.athleteId === id || x.id === id);
-  return m ? (m.shortName || m.name) : '';
+  return m ? (m.shortName || m.name || '') : '';
 }
 function infoBlock(g) {
   const tv = (g.tvNetworks || []).map((t) => (t.name || '').trim()).filter(Boolean);
@@ -1296,13 +1304,18 @@ function syncPrefs() {
   S.dirty = true; save();
   syncTimer = setTimeout(flushPrefs, 900);
 }
-async function flushPrefs() {
+async function flushPrefs(tentativa) {
   if (!ROBO || !S.device) return;
+  const n = tentativa || 0;
+  let falhou = false;
   try {
     const r = await roboPost({ a: 'prefs', id: S.device.id, secret: S.device.secret, ...followsPayload() });
-    if (r.ok) { S.dirty = false; save(); }
-    else if (r.code === 'auth') { S.device = null; save(); toast('Este aparelho precisa ativar os avisos de novo.'); }
-  } catch (_) { /* tenta de novo ao abrir o app */ }
+    if (r.ok) { S.dirty = false; save(); return; }
+    if (r.code === 'auth') { S.device = null; save(); toast('Este aparelho precisa ativar os avisos de novo.'); return; }
+    falhou = true;
+  } catch (_) { falhou = true; }
+  if (falhou && n < 3) setTimeout(() => flushPrefs(n + 1), 20000);
+  else if (falhou) toast('Não consegui salvar no robô agora. Tento de novo quando você abrir o app.');
 }
 function b64ToBytes(b) {
   const s = atob(b.replace(/-/g, '+').replace(/_/g, '/').padEnd(b.length + (4 - b.length % 4) % 4, '='));
@@ -1335,6 +1348,7 @@ async function keepPushAlive() {
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(S.device.key) });
+    if (S.dirty) flushPrefs();
     if (sub.endpoint !== S.device.endpoint) {
       const r = await roboPost({ a: 'subscribe', id: S.device.id, secret: S.device.secret, sub: sub.toJSON(), ...followsPayload() });
       if (r.ok) { S.device.endpoint = sub.endpoint; save(); }
@@ -1687,7 +1701,8 @@ const ACTIONS = {
     S.watch[id] = { m: modo, c: [g.homeCompetitor.id, g.awayCompetitor.id].filter(Boolean), t: new Date(g.startTime).getTime() };
     save(); syncPrefs();
     ACTIONS.watchclose();
-    toast(S.device ? 'Acompanhando. O cartão chega em até 1 minuto.' : 'Salvo. Ligue os avisos para receber o cartão.');
+    const longe = new Date(g.startTime).getTime() - Date.now() > 90 * 6e4;
+    toast(!S.device ? 'Salvo. Ligue os avisos para receber o cartão.' : longe ? 'Combinado. O cartão começa perto do início do jogo.' : 'Acompanhando. O cartão chega em até 1 minuto.');
     rerender();
   },
   watchstop(el) {

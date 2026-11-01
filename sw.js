@@ -1,5 +1,5 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
-const VERSION = 'tribuna-6';
+const VERSION = 'tribuna-7';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'fontes.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
 const IMG_CACHE = 'tribuna-img';
 
@@ -49,14 +49,17 @@ self.addEventListener('push', (e) => {
   e.waitUntil((async () => {
     // Cartao ao vivo: fecha o anterior antes, porque a troca por tag nao e confiavel em todo iOS.
     if (m.live && m.tag) {
-      const antigos = await self.registration.getNotifications({ tag: m.tag });
-      antigos.forEach((n) => n.close());
+      // Se falhar, segue: o iPhone penaliza push sem notificacao visivel.
+      try {
+        const antigos = await self.registration.getNotifications({ tag: m.tag });
+        antigos.forEach((n) => n.close());
+      } catch (_) {}
     }
     await self.registration.showNotification(m.title || 'Tribuna', {
       body: m.body || '',
       tag: m.tag || undefined,
       renotify: !!m.tag,
-      requireInteraction: !!m.live,
+      requireInteraction: !!m.live && !m.fim,
       icon: 'icons/icon-192.png',
       badge: 'icons/badge-96.png',
       data: { url: m.url || '#/agora' }

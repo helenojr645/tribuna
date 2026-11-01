@@ -34,7 +34,7 @@ function world() {
       getUuid: () => crypto.randomUUID(),
       DigestAlgorithm: { SHA_256: 'x' },
       computeDigest: (_a, s) => [...crypto.createHash('sha256').update(s).digest()].map((b) => (b > 127 ? b - 256 : b)),
-      newBlob: (s) => ({ getBytes: () => [...Buffer.from(typeof s === 'string' ? s : [])] }),
+      newBlob: (s) => ({ getBytes: () => (typeof s === 'string' ? [...Buffer.from(s)] : []) }),
       formatDate: () => '12'
     },
     UrlFetchApp: {
@@ -60,7 +60,8 @@ function world() {
         return ok({ games: w.games });
       },
       fetchAll(reqs) {
-        return reqs.map(() => {
+        return reqs.map((q) => {
+          w.ultimosCab = q.headers;
           const c = w.pushCode;
           if (c === 200) w.pushes.push(1);
           return { getResponseCode: () => c, getContentText: () => '' };
@@ -510,6 +511,83 @@ t('cartao tenis e cartao na reserva FotMob', () => {
   m = w.tick();
   assert.equal(m.length, 1);
   assert.ok(m[0].title.startsWith('Flamengo 1 x 0 Grêmio') && m[0].body.includes('Posse 61% x 39% · No gol 3 x 1'), m[0].title + ' / ' + m[0].body);
+});
+
+t('plano cheio nunca passa de 9 KB e o robo segue vivo; acompanhado fica na reserva', () => {
+  const w = world();
+  const muitos = [];
+  for (let i = 0; i < 300; i++) {
+    const g = foot({ id: 1000 + i, statusGroup: i % 2 ? 2 : 3, competitionDisplayName: 'Campeonato Internacional de Nome Bem Comprido - Grupo ' + i });
+    g.homeCompetitor = { id: 5000 + i, name: 'Associação Atlética Muito Comprida ' + i, shortName: 'AA' + i, score: 0 };
+    g.awayCompetitor = { id: 6000 + i, name: 'Sociedade Esportiva Também Comprida ' + i, shortName: 'SE' + i, score: 0 };
+    muitos.push(g);
+  }
+  w.games = muitos;
+  w.register({ follows: { c: muitos.slice(0, 200).map((g) => g.homeCompetitor.id), comp: [], f1: false, mute: [] }, watch: [{ g: 1299, c: [5299, 6299], m: 'main', t: Date.now() }] });
+  w.details = {};
+  w.tick();
+  assert.ok(Buffer.byteLength(w.store.plan) <= 8600, 'plano com ' + Buffer.byteLength(w.store.plan) + ' bytes');
+  assert.equal(w.store.lastError || '', '');
+  assert.equal(JSON.parse(w.store.plan).games[0].id, 1299, 'acompanhado vem primeiro');
+});
+
+t('fim visto so depois da parada: sai o cartao final e a vigia encerra', () => {
+  const w = world(); const g = foot({ statusGroup: 3, gameTime: 60, gameTimeDisplay: "60'" }); score(g, 1, 0); w.games = [g];
+  const r = acompanhar(w, 'main', g);
+  w.details[7] = { events: [], members: [], stages: [] };
+  w.tick();
+  w.next(60); g.statusGroup = 4; g.statusText = 'Fim'; score(g, 2, 0);
+  const m = w.tick();
+  assert.equal(m.length, 1);
+  assert.equal(m[0].title, 'Flamengo 2 x 0 Grêmio · Fim');
+  assert.ok(m[0].body.startsWith('Fim de jogo'), m[0].body);
+  assert.equal(m[0].fim, true);
+  assert.equal(JSON.parse(w.store['dev:' + r.id]).watch.length, 0);
+  w.next(); assert.deepEqual(w.tick(), []);
+  w.ctx.savePrefs_(JSON.parse(w.store['dev:' + r.id]), { follows: { c: [] }, watch: [{ g: 7, c: [1, 2], m: 'main', t: 1 }] });
+  assert.equal(JSON.parse(w.store['dev:' + r.id]).watch.length, 0, 'app reenviando jogo acabado nao reativa');
+});
+
+t('parar e voltar a acompanhar: novo cartao sem esperar 15 min', () => {
+  const w = world(); const g = foot({ statusGroup: 3, gameTime: 20, gameTimeDisplay: "20'" }); score(g, 0, 0); w.games = [g];
+  const r = acompanhar(w, 'main', g);
+  w.details[7] = { events: [], members: [], stages: [] };
+  assert.equal(w.tick().length, 1); w.next();
+  assert.equal(w.tick().length, 0, 'sem novidade');
+  const dev = () => JSON.parse(w.store['dev:' + r.id]);
+  w.ctx.savePrefs_(dev(), { follows: { c: [] }, watch: [] }); w.next();
+  assert.equal(w.tick().length, 0, 'parado');
+  w.ctx.savePrefs_(dev(), { follows: { c: [] }, watch: [{ g: 7, c: [1, 2], m: 'main', t: new Date(g.startTime).getTime() }] }); w.next();
+  assert.equal(w.tick().length, 1, 'volta na hora');
+});
+
+t('salvar preferencia nao apaga o plano e a reserva segue com 365 fora', () => {
+  const w = world(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  const r = acompanhar(w, 'main', g);
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora.s365 = true;
+  w.ctx.savePrefs_(JSON.parse(w.store['dev:' + r.id]), { follows: { c: [] }, watch: [{ g: 7, c: [1, 2], m: 'main', t: new Date(g.startTime).getTime() }] });
+  w.fm = [fmJogo('Flamengo', 'Grêmio', 1, 0, g.startTime)];
+  const m = w.tick();
+  assert.equal(m.length, 1, 'reserva continuou: ' + w.store.lastError);
+  assert.ok(m[0].title.startsWith('Flamengo 1 x 0'));
+});
+
+t('fila nao ressuscita cartao velho e modos nao se misturam; Topic no cabecalho', () => {
+  const w = world(); const g = foot({ statusGroup: 3, gameTime: 50, gameTimeDisplay: "50'" }); score(g, 0, 0); w.games = [g];
+  acompanhar(w, 'main', g);
+  w.details[7] = { events: [], members: [], stages: [] };
+  w.tick();
+  assert.equal(w.ultimosCab.Topic, 'live7');
+  w.next(); w.pushCode = 503; score(g, 1, 0); w.tick();
+  assert.ok(w.store.queue); w.next();
+  w.pushCode = 200; score(g, 2, 0);
+  const antes = w.ctx.__sent.length;
+  w.tick();
+  const novos = w.ctx.__sent.slice(antes);
+  assert.equal(novos.length, 1, 'so o mais novo: ' + novos.map((x) => x.title));
+  assert.ok(novos[0].title.includes('2 x 0'), novos[0].title);
+  assert.ok(!w.store.queue);
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

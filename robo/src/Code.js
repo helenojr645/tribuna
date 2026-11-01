@@ -33,7 +33,7 @@ function doGet(e) {
 function doPost(e) {
   var lock = LockService.getScriptLock();
   try {
-    lock.waitLock(15000);
+    lock.waitLock(28000);
     var req = JSON.parse(e.postData.contents);
     if (req.a === 'subscribe') return json_(subscribe_(req));
     if (req.a === 'purge') return json_(purge_(req));
@@ -154,9 +154,14 @@ function cleanPrefs_(req, d) {
     d.rules[k] = req.rules && typeof req.rules[k] === 'boolean' ? req.rules[k] : DEFAULT_RULES[k];
   });
   d.spoiler = !!req.spoiler;
+  var antes = {};
+  (d.watch || []).forEach(function (w) { antes[w.g] = w; });
+  var acabados = d.fim || [];
   d.watch = (req.watch || []).slice(0, 5).map(function (w) {
-    return { g: Number(w.g), c: (w.c || []).map(Number).filter(isFinite).slice(0, 2), m: w.m === 'all' ? 'all' : 'main', t: Number(w.t) || 0 };
-  }).filter(function (w) { return isFinite(w.g) && w.g > 0; });
+    var g = Number(w.g), velho = antes[g];
+    // Sem registro anterior e um pedido novo: o primeiro cartao sai no proximo minuto.
+    return { g: g, c: (w.c || []).map(Number).filter(isFinite).slice(0, 2), m: w.m === 'all' ? 'all' : 'main', t: Number(w.t) || 0, novo: velho ? !!velho.novo : true };
+  }).filter(function (w) { return isFinite(w.g) && w.g > 0 && acabados.indexOf(w.g) < 0; });
   var q = req.quiet;
   d.quiet = q && q.on ? { on: true, from: Number(q.from) || 0, to: Number(q.to) || 0 } : { on: false };
   return d;
@@ -188,6 +193,12 @@ function purge_(req) {
   return { ok: true, removed: ids.length };
 }
 
+function invalidarPlano_() {
+  var p = props_();
+  var plano = JSON.parse(p.getProperty('plan') || 'null');
+  if (plano) { plano.at = 0; p.setProperty('plan', JSON.stringify(plano)); }
+}
+
 function subscribe_(req) {
   var p = props_();
   var existing = req.id && req.secret ? authDevice_(req) : null;
@@ -216,14 +227,14 @@ function subscribe_(req) {
   d.sub = { endpoint: s.endpoint, keys: { p256dh: s.keys.p256dh, auth: s.keys.auth } };
   cleanPrefs_(req, d);
   saveDevice_(d);
-  p.deleteProperty('plan');
+  invalidarPlano_();
   return { ok: true, id: d.id, secret: d.secret };
 }
 
 function savePrefs_(dev, req) {
   cleanPrefs_(req, dev);
   saveDevice_(dev);
-  props_().deleteProperty('plan');
+  invalidarPlano_();
   return { ok: true };
 }
 
@@ -259,7 +270,7 @@ function pushMany_(items) {
       var body = WebPush.encryptPayload(JSON.stringify(it.msg), it.dev.sub.keys.p256dh, it.dev.sub.keys.auth, randomBytes_);
       reqs.push({
         url: ep, method: 'post', contentType: 'application/octet-stream',
-        headers: { Authorization: auths[origin], TTL: '1800', Urgency: 'high', 'Content-Encoding': 'aes128gcm' },
+        headers: cabecalhos_(it.msg, auths[origin]),
         payload: Utilities.newBlob(toSigned_(body), 'application/octet-stream'), muteHttpExceptions: true
       });
       ready.push(it);
@@ -300,13 +311,25 @@ function deliver_(items, devices, now) {
   devices.forEach(function (d) { byId[d.id] = d; });
   var pending = q.filter(function (x) { return now - x.at < 10 * 60000 && byId[x.id]; })
     .map(function (x) { return { dev: byId[x.id], msg: x.msg, at: x.at }; });
-  var all = pending.concat(items.map(function (it) { return { dev: it.dev, msg: it.msg, at: now }; }));
+  var novos = items.map(function (it) { return { dev: it.dev, msg: it.msg, at: now }; });
+  // Cartao pendente mais velho que um novo do mesmo jogo nao sai: voltaria o placar.
+  pending = pending.filter(function (x) {
+    return !(x.msg.live && novos.some(function (n) { return n.dev.id === x.dev.id && n.msg.tag === x.msg.tag; }));
+  });
+  var all = pending.concat(novos);
   if (!all.length) { if (q.length) p.deleteProperty('queue'); return; }
   var r = pushMany_(all);
   var next = (r.retry || []).map(function (it) { return { id: it.dev.id, msg: it.msg, at: it.at || now }; });
   var text = JSON.stringify(next);
   while (text.length > 8000 && next.length) { next.shift(); text = JSON.stringify(next); }
   if (next.length) p.setProperty('queue', text); else if (q.length) p.deleteProperty('queue');
+}
+
+function cabecalhos_(msg, autorizacao) {
+  var h = { Authorization: autorizacao, TTL: '1800', Urgency: 'high', 'Content-Encoding': 'aes128gcm' };
+  // Topic: cartao ainda nao entregue e trocado pelo mais novo no servico de push.
+  if (msg.live && msg.tag) h.Topic = msg.tag;
+  return h;
 }
 
 function toSigned_(u8) {
@@ -373,7 +396,11 @@ function tick() {
       p.setProperty('plan', JSON.stringify(plan));
       cleanup_();
     }
-    var active = plan.live || plan.starts.some(function (t) { return now >= t - 90 * 60000 && now <= t + 5 * 3600000; });
+    // Jogo acompanhado segue vigiado ate o cartao final, mesmo se o fim aconteceu com o robo parado.
+    var vigiando = devices.some(function (d) {
+      return (d.watch || []).some(function (w) { return !w.t || (now >= w.t - 90 * 60000 && now < w.t + 10 * 3600000); });
+    });
+    var active = vigiando || plan.live || plan.starts.some(function (t) { return now >= t - 90 * 60000 && now <= t + 5 * 3600000; });
     if (!active && !plan.f1Active) {
       deliver_([], devices, now);
       p.setProperties({ fails: '0', lastError: '' });
@@ -404,6 +431,7 @@ function tick() {
     }
     if (Object.keys(writes).length) p.setProperties(writes);
     deliver_(out, devices, now);
+    aplicarFimDasVigias_(devices);
     p.setProperty('lastPoll', String(now));
     if (partial.length) {
       noteFailure_(p, partial.join(' | '));
@@ -424,7 +452,10 @@ function followedIds_(devices) {
   devices.forEach(function (d) {
     (d.follows.c || []).forEach(function (x) { c[x] = 1; });
     (d.follows.comp || []).forEach(function (x) { comp[x] = 1; });
-    (d.watch || []).forEach(function (w) { w.c.forEach(function (x) { c[x] = 1; }); });
+    (d.watch || []).forEach(function (w) {
+      if (w.t && Date.now() > w.t + 10 * 3600000) return;
+      w.c.forEach(function (x) { c[x] = 1; });
+    });
   });
   return { c: Object.keys(c), comp: Object.keys(comp) };
 }
@@ -444,9 +475,11 @@ function fetchFollowedGames_(devices) {
 }
 
 // ---------- Reservas ----------
+function bytes_(s) { return Utilities.newBlob(String(s)).getBytes().length; }
+
 function planoJogo_(g) {
-  var lado = function (c) { return { id: c.id, name: c.name, shortName: c.shortName || '' }; };
-  return { id: g.id, sportId: g.sportId, competitionId: g.competitionId, competitionDisplayName: g.competitionDisplayName, startTime: g.startTime, statusGroup: g.statusGroup, homeCompetitor: lado(g.homeCompetitor), awayCompetitor: lado(g.awayCompetitor) };
+  var lado = function (c) { return c.shortName ? { id: c.id, name: c.name, shortName: c.shortName } : { id: c.id, name: c.name }; };
+  return { id: g.id, sportId: g.sportId, competitionId: g.competitionId, competitionDisplayName: String(g.competitionDisplayName || '').slice(0, 40), startTime: g.startTime, statusGroup: g.statusGroup, homeCompetitor: lado(g.homeCompetitor), awayCompetitor: lado(g.awayCompetitor) };
 }
 
 var NOME_FORA = { fc: 1, cf: 1, cd: 1, club: 1, clube: 1, de: 1, del: 1, la: 1, el: 1, sc: 1, ac: 1, ca: 1, afc: 1, atletico: 1, athletico: 1, deportivo: 1, real: 1, sport: 1, sporting: 1, esporte: 1, do: 1, da: 1, cr: 1, rb: 1, united: 1, city: 1, ec: 1, se: 1 };
@@ -573,7 +606,7 @@ function buildPlan_(devices, now) {
     var t = new Date(g.startTime).getTime();
     if (t > now - 6 * 3600000 && t < now + 24 * 3600000) {
       starts.push(t);
-      if (games.length < 40) games.push(planoJogo_(g));
+      games.push(planoJogo_(g));
     }
   });
   var f1Active = false;
@@ -590,7 +623,14 @@ function buildPlan_(devices, now) {
       f1Active = true;
     }
   }
-  return { at: now, starts: starts, live: live, f1Active: f1Active, games: games };
+  // Uma Property guarda 9 KB: acompanhados e ao vivo ficam, o resto fica de fora so da reserva.
+  var vigiados = {};
+  devices.forEach(function (d) { (d.watch || []).forEach(function (w) { vigiados[w.g] = 1; }); });
+  var peso = function (x) { return (vigiados[x.id] ? 0 : 2) + (x.statusGroup === 3 ? 0 : 1); };
+  games.sort(function (u, v) { return peso(u) - peso(v) || new Date(u.startTime) - new Date(v.startTime); });
+  var plano = { at: now, starts: starts.slice(0, 80), live: live, f1Active: f1Active, games: games };
+  while (bytes_(JSON.stringify(plano)) > 8500 && plano.games.length) plano.games.pop();
+  return plano;
 }
 
 function shortName_(c) { return c.shortName || c.name; }
@@ -627,7 +667,7 @@ function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
       st: g.statusText || '', sw: setsWon_(g),
       rem: prev ? prev.rem : 0, lu: prev ? prev.lu : 0, ev: prev ? prev.ev : [],
       gh: prev && prev.gh != null ? prev.gh : h, ga: prev && prev.ga != null ? prev.ga : a,
-      card: prev ? prev.card : 0, cw: prev && prev.cw ? prev.cw : [], last: prev ? prev.last : '',
+      card: prev ? prev.card : 0, last: prev ? prev.last : '',
       t: t
     };
     var events = [];
@@ -655,9 +695,8 @@ function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
       var ultimo = events.filter(function (ev) { return ev.rule !== 'remind' && ev.rule !== 'lineup'; }).slice(-1)[0];
       if (ultimo) cur.last = (ultimo.head || ultimo.title).slice(0, 70);
     }
-    var cartaoProntos = enviarCartoes_(g, cur, prev, events, devices, out, now);
+    enviarCartoes_(g, cur, prev, events, devices, out, now);
     if (!prev || JSON.stringify(prev) !== JSON.stringify(cur)) writes[key] = JSON.stringify(cur);
-    if (cartaoProntos) return;
   });
 }
 
@@ -665,7 +704,9 @@ var CARTAO_PRINCIPAL = { remind: 1, lineup: 1, kick: 1, goal: 1, red: 1, ht: 1, 
 
 // Quem acompanha recebe um cartao unico por jogo; os demais, os avisos normais.
 function enviarCartoes_(g, cur, prev, events, devices, out, now) {
-  var cartao = null;
+  var cartoes = {};
+  var enviou = false;
+  var acabou = g.statusGroup === 4;
   devices.forEach(function (d) {
     var w = watchDe_(d, g, now);
     if (!w) {
@@ -675,21 +716,33 @@ function enviarCartoes_(g, cur, prev, events, devices, out, now) {
       return;
     }
     var lances = events.filter(function (ev) { return w.m === 'all' || CARTAO_PRINCIPAL[ev.rule]; });
-    var primeiro = cur.cw.indexOf(d.id) < 0;
     var resumo = g.statusGroup === 3 && now - (cur.card || 0) >= 15 * 60000;
-    if (g.statusGroup === 4 && !lances.length) return;
-    if (!lances.length && !primeiro && !resumo) return;
-    if (!cartao) cartao = montarCartao_(g, cur, lances, now);
-    out.push({ dev: d, msg: { title: cartao.title, body: cartao.body, tag: 'live' + g.id, url: '#/jogo/' + g.id, live: true } });
-    if (primeiro) cur.cw.push(d.id);
-    // Jogo acabou: o ultimo cartao fica com o resultado e a vigia termina.
-    if (g.statusGroup === 4) {
-      d.watch = (d.watch || []).filter(function (x) { return x.g !== g.id; });
-      saveDevice_(d);
-    }
+    // Fim sempre gera o ultimo cartao, mesmo se o robo nao viu o apito (parada, jogo cancelado).
+    if (!acabou && !lances.length && !w.novo && !resumo) return;
+    if (!cartoes[w.m]) cartoes[w.m] = montarCartao_(g, cur, lances, now);
+    var c = cartoes[w.m];
+    out.push({ dev: d, msg: { title: c.title, body: c.body, tag: 'live' + g.id, url: '#/jogo/' + g.id, live: true, fim: acabou } });
+    enviou = true;
+    if (w.novo) { w.novo = false; d._mudou = true; }
+    // Encerrada so depois da entrega, no fim do ciclo.
+    if (acabou) { d._tirar = (d._tirar || []).concat([g.id]); d._mudou = true; }
   });
-  if (cartao) cur.card = now;
-  return !!cartao;
+  if (enviou) cur.card = now;
+  return enviou;
+}
+
+function aplicarFimDasVigias_(devices) {
+  devices.forEach(function (d) {
+    if (!d._mudou) return;
+    var tirar = d._tirar || [];
+    if (tirar.length) {
+      d.watch = (d.watch || []).filter(function (x) { return tirar.indexOf(x.g) < 0; });
+      d.fim = (d.fim || []).concat(tirar).slice(-10);
+    }
+    delete d._tirar;
+    delete d._mudou;
+    saveDevice_(d);
+  });
 }
 
 function par_(stats, re, g) {
@@ -755,6 +808,7 @@ function sobrenome_(n) { var p = String(n || '').trim().split(/\s+/); return p[p
 
 function montarCartao_(g, cur, lances, now) {
   var cabeca = lances.map(function (ev) { return ev.head || ev.title; }).slice(-2).join(' · ');
+  if (!cabeca && g.statusGroup === 4) cabeca = /cancel/i.test(g.statusText || '') ? 'Jogo cancelado' : 'Fim de jogo';
   var stats = g.statusGroup === 2 ? [] : estatisticasCartao_(g);
   var linhas = [];
   if (g.sportId === 3) {

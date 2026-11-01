@@ -42,6 +42,7 @@ function world() {
         if (w.failApi) throw new Error('fora do ar');
         const dono = url.includes('365scores') ? 's365' : url.includes('fotmob') ? 'fotmob' : url.includes('espn') ? 'espn' : url.includes('openf1') ? 'openf1' : '';
         if (w.fora[dono]) throw new Error(dono + ' fora');
+        if (url.includes('matchDetails')) return ok({ content: w.fmDet || {} });
         if (url.includes('fotmob')) return ok({ leagues: [{ primaryId: 268, name: 'Série A', matches: w.fm }] });
         if (url.includes('soccer/all')) return ok({ events: w.ev });
         if (url.includes('/tennis/')) return ok({ events: url.includes('/atp/') ? w.ten : [] });
@@ -49,6 +50,8 @@ function world() {
         if (url.includes('/session_result')) return ok(w.f1.results);
         if (url.includes('/drivers')) return ok(w.f1.drivers);
         if (url.includes('/sessions')) return ok(w.f1.sessions);
+        if (url.includes('/game/stats/')) return ok({ statistics: w.stats || [] });
+        if (url.includes('matchDetails')) return ok({ content: w.fmDet || {} });
         if (url.includes('/game/')) {
           if (w.detailFail) throw new Error('detalhe fora');
           const id = url.match(/gameId=(\d+)/)[1];
@@ -404,6 +407,109 @@ t('F1: OpenF1 fora, ESPN assume sem repetir lembrete', () => {
   const m = w.tick();
   assert.equal(m.length, 1);
   assert.ok(m[0].body.startsWith('1. Norris'), m[0].body);
+});
+
+const statsDe = (posse, gol, chutes, esc) => [
+  ['Posse de Bola', posse], ['Chutes no gol', gol], ['Total de chutes', chutes], ['Escanteios', esc]
+].flatMap(([name, v]) => [{ name, competitorId: 1, value: String(v[0]) }, { name, competitorId: 2, value: String(v[1]) }]);
+const acompanhar = (w, m, g, extra) => w.register({ follows: { c: [], comp: [], f1: false, mute: [] }, watch: [{ g: 7, c: [1, 2], m: m || 'main', t: new Date(g.startTime).getTime() }], ...(extra || {}) });
+
+t('cartao: primeiro resumo, gol atualiza o mesmo cartao, amarelo so no modo completo', () => {
+  const w = world(); const g = foot({ statusGroup: 3, gameTime: 60, gameTimeDisplay: "60'" }); score(g, 0, 0); w.games = [g];
+  acompanhar(w, 'main', g);
+  w.stats = statsDe(['58%', '42%'], [5, 2], [11, 6], [6, 3]);
+  w.details[7] = { events: [], members: [{ id: 9, athleteId: 9, shortName: 'Pedro' }], stages: [] };
+  let m = w.tick();
+  assert.equal(m.length, 1, 'cartao inicial');
+  assert.equal(m[0].tag, 'live7'); assert.equal(m[0].live, true);
+  assert.equal(m[0].title, "Flamengo 0 x 0 Grêmio · 60'");
+  assert.ok(m[0].body.includes('Posse 58% x 42% · No gol 5 x 2') && m[0].body.includes('Chutes 11 x 6 · Escanteios 6 x 3'), m[0].body);
+  w.next(); assert.deepEqual(w.tick(), [], 'sem lance nao toca');
+  w.next(); score(g, 1, 0); w.details[7].events = [goal(1, 62, 9)]; g.gameTimeDisplay = "62'";
+  m = w.tick();
+  assert.equal(m.length, 1, 'um cartao, nao aviso e cartao');
+  assert.equal(m[0].tag, 'live7');
+  assert.ok(m[0].title.startsWith('Flamengo 1 x 0') && m[0].body.startsWith("GOL! Pedro 62'"), m[0].title + ' / ' + m[0].body);
+  w.next(); w.details[7].events.push({ competitorId: 2, gameTime: 64, gameTimeDisplay: "64'", playerId: 9, stageId: 7, eventType: { id: 2, name: 'Cartão Amarelo' } });
+  assert.deepEqual(w.tick(), [], 'modo principal ignora amarelo');
+});
+
+t('cartao completo: amarelo e troca atualizam; resumo sai a cada 15 min; ultimo lance fica', () => {
+  const w = world(); const g = foot({ statusGroup: 3, gameTime: 30, gameTimeDisplay: "30'" }); score(g, 1, 0); w.games = [g];
+  acompanhar(w, 'all', g);
+  w.details[7] = { events: [goal(1, 20, 9)], members: [{ id: 9, athleteId: 9, shortName: 'Pedro' }, { id: 8, athleteId: 8, shortName: 'Gabi' }], stages: [] };
+  w.stats = statsDe(['50%', '50%'], [1, 1], [2, 2], [1, 1]);
+  const m0 = w.tick();
+  assert.ok(m0[0].body.includes("Último lance: GOL! Pedro 20'"), m0[0].body);
+  w.next(); w.details[7].events.push({ competitorId: 2, gameTime: 31, gameTimeDisplay: "31'", playerId: 8, stageId: 7, eventType: { id: 2, name: 'Cartão Amarelo' } });
+  let m = w.tick();
+  assert.ok(m[0].body.startsWith("Amarelo: Gabi 31' (Grêmio)"), m[0].body);
+  w.next(); w.details[7].events.push({ competitorId: 1, gameTime: 33, gameTimeDisplay: "33'", playerId: 8, extraPlayers: [9], stageId: 7, eventType: { id: 1000, name: 'Substitution' } });
+  m = w.tick();
+  assert.ok(m[0].body.startsWith("Flamengo: entra Gabi, sai Pedro 33'"), m[0].body);
+  w.next(5); assert.deepEqual(w.tick(), [], 'antes dos 15 min');
+  w.next(10);
+  m = w.tick();
+  assert.equal(m.length, 1, 'resumo de 15 min');
+  assert.ok(m[0].body.startsWith('Último lance: Flamengo: entra Gabi'), m[0].body);
+});
+
+t('cartao: fim encerra a vigia e silencio/spoiler nao bloqueiam quem pediu para acompanhar', () => {
+  const w = world(); const g = foot({ statusGroup: 3, gameTime: 89, gameTimeDisplay: "89'" }); score(g, 2, 1); w.games = [g];
+  const r = acompanhar(w, 'main', g, { quiet: { on: true, from: 0, to: 23 }, spoiler: true });
+  w.stats = statsDe(['60%', '40%'], [7, 3], [14, 8], [8, 2]);
+  w.details[7] = { events: [], members: [], stages: [] };
+  assert.equal(w.tick().length, 1); w.next();
+  g.statusGroup = 4; g.statusText = 'Fim';
+  const m = w.tick();
+  assert.equal(m.length, 1);
+  assert.equal(m[0].title, 'Flamengo 2 x 1 Grêmio · Fim');
+  assert.ok(m[0].body.startsWith('Fim de jogo') && m[0].body.includes('No gol 7 x 3'), m[0].body);
+  assert.equal(JSON.parse(w.store['dev:' + r.id]).watch.length, 0, 'vigia encerrada');
+  w.next(20); assert.deepEqual(w.tick(), [], 'nada depois do fim');
+});
+
+t('cartao: jogo fora dos seguidos e antes do inicio', () => {
+  const w = world(); const g = foot(); w.games = [g];
+  acompanhar(w, 'main', g);
+  const m = w.tick();
+  assert.equal(m.length, 1);
+  assert.equal(m[0].title, 'Flamengo x Grêmio');
+  assert.ok(m[0].body.startsWith('Começa às'), m[0].body);
+  w.next(12);
+  const r2 = w.tick();
+  assert.ok(r2[0] && r2[0].body.startsWith('Começa em') && r2[0].tag === 'live7', JSON.stringify(r2));
+});
+
+t('cartao: pressao aparece quando um lado finaliza muito mais', () => {
+  const w = world(); const g = foot({ statusGroup: 3, gameTime: 70, gameTimeDisplay: "70'" }); score(g, 0, 0); w.games = [g];
+  acompanhar(w, 'main', g);
+  w.stats = statsDe(['55%', '45%'], [4, 1], [9, 3], [5, 1]);
+  w.details[7] = { events: [], members: [], stages: [], chartEvents: { events: [["60'", 1], ["63'", 1], ["66'", 1], ["68'", 1], ["61'", 2], ["10'", 2], ["12'", 2]].map(([time, competitorNum]) => ({ time, competitorNum })) } };
+  const m = w.tick();
+  assert.ok(m[0].body.includes('Pressão: Flamengo (4 x 1 chutes em 15 min)'), m[0].body);
+});
+
+t('cartao tenis e cartao na reserva FotMob', () => {
+  let w = world();
+  const st = [{ id: 34, shortName: 'Game', isLive: true, homeCompetitorScore: 30, awayCompetitorScore: 15 }, { id: 27, shortName: 'S1', homeCompetitorScore: 6, awayCompetitorScore: 4 }, { id: 28, shortName: 'S2', homeCompetitorScore: 2, awayCompetitorScore: 1, isLive: true }, { id: 35, shortName: 'Sets', homeCompetitorScore: 1, awayCompetitorScore: 0 }];
+  const g = { id: 7, sportId: 3, competitionId: 5, startTime: new Date(w.clock - 36e5).toISOString(), statusGroup: 3, statusText: '2º set', stages: st, homeCompetitor: { id: 1, name: 'João Fonseca', score: 1 }, awayCompetitor: { id: 2, name: 'Carlos Alcaraz', score: 0 } };
+  w.games = [g];
+  acompanhar(w, 'main', g);
+  w.stats = [['Ace', 5, 2], ['Dupla falta', 1, 3], ['Break points vencidos', '2', '1'], ['Total de pontos ganhos', '40/70 (57%)', '30/70 (43%)']].flatMap(([name, a, b]) => [{ name, competitorId: 1, value: String(a) }, { name, competitorId: 2, value: String(b) }]);
+  let m = w.tick();
+  assert.equal(m[0].title, 'Fonseca 6-4 2-1 Alcaraz');
+  assert.ok(m[0].body.includes('Game 30-15') && m[0].body.includes('Aces 5 x 2 · Duplas 1 x 3') && m[0].body.includes('Quebras 2 x 1 · Pontos 40 x 30'), m[0].body);
+
+  w = world(); const f = foot({ statusGroup: 3 }); score(f, 0, 0); w.games = [f];
+  acompanhar(w, 'main', f);
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora.s365 = true;
+  w.fm = [fmJogo('Flamengo', 'Grêmio', 1, 0, f.startTime)];
+  w.fmDet = { stats: { Periods: { All: { stats: [{ stats: [{ key: 'BallPossesion', stats: [61, 39] }, { key: 'ShotsOnTarget', stats: [3, 1] }] }] } } } };
+  m = w.tick();
+  assert.equal(m.length, 1);
+  assert.ok(m[0].title.startsWith('Flamengo 1 x 0 Grêmio') && m[0].body.includes('Posse 61% x 39% · No gol 3 x 1'), m[0].title + ' / ' + m[0].body);
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

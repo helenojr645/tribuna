@@ -154,6 +154,9 @@ function cleanPrefs_(req, d) {
     d.rules[k] = req.rules && typeof req.rules[k] === 'boolean' ? req.rules[k] : DEFAULT_RULES[k];
   });
   d.spoiler = !!req.spoiler;
+  d.watch = (req.watch || []).slice(0, 5).map(function (w) {
+    return { g: Number(w.g), c: (w.c || []).map(Number).filter(isFinite).slice(0, 2), m: w.m === 'all' ? 'all' : 'main', t: Number(w.t) || 0 };
+  }).filter(function (w) { return isFinite(w.g) && w.g > 0; });
   var q = req.quiet;
   d.quiet = q && q.on ? { on: true, from: Number(q.from) || 0, to: Number(q.to) || 0 } : { on: false };
   return d;
@@ -314,7 +317,17 @@ function toSigned_(u8) {
 
 // ---------- Vigia ----------
 
+var CACHE_CICLO = {};
+
 function fetchJson_(url) {
+  var memo = url.indexOf('/game/') >= 0 || url.indexOf('matchDetails') >= 0;
+  if (memo && CACHE_CICLO[url]) return CACHE_CICLO[url];
+  var dados = fetchJsonRede_(url);
+  if (memo) CACHE_CICLO[url] = dados;
+  return dados;
+}
+
+function fetchJsonRede_(url) {
   var r = UrlFetchApp.fetch(url, { muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } });
   if (r.getResponseCode() !== 200) throw new Error('HTTP ' + r.getResponseCode() + ' em ' + url.split('?')[0]);
   return JSON.parse(r.getContentText());
@@ -338,6 +351,7 @@ function tick() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
   var p = props_();
+  CACHE_CICLO = {};
   try {
     var now = Date.now();
     p.setProperty('lastTick', String(now));
@@ -410,6 +424,7 @@ function followedIds_(devices) {
   devices.forEach(function (d) {
     (d.follows.c || []).forEach(function (x) { c[x] = 1; });
     (d.follows.comp || []).forEach(function (x) { comp[x] = 1; });
+    (d.watch || []).forEach(function (w) { w.c.forEach(function (x) { c[x] = 1; }); });
   });
   return { c: Object.keys(c), comp: Object.keys(comp) };
 }
@@ -485,7 +500,7 @@ function futebolReserva_(now) {
         vistos[m.id] = 1;
         var st = m.status || {};
         var curto = String((st.liveTime && st.liveTime.short) || '').replace(/[^0-9A-Za-z+]/g, '');
-        ms.push({ liga: l.name, h: m.home.name, a: m.away.name, sh: st.started ? Number(m.home.score) || 0 : -1, sa: st.started ? Number(m.away.score) || 0 : -1,
+        ms.push({ fm: m.id, min: /^\d/.test(curto) ? curto + "'" : '', liga: l.name, h: m.home.name, a: m.away.name, sh: st.started ? Number(m.home.score) || 0 : -1, sa: st.started ? Number(m.away.score) || 0 : -1,
           t: st.utcTime, g: st.finished || st.cancelled || st.awarded ? 4 : st.started ? 3 : 2, txt: /^HT$/i.test(curto) ? 'Intervalo' : 'Ao vivo' });
       });
     });
@@ -540,6 +555,8 @@ function jogosReserva_(plan, now) {
     g._alt = true;
     g.statusGroup = a.g;
     g.statusText = a.g === 4 ? 'Fim' : a.g === 2 ? 'Programação' : a.txt;
+    if (a.fm) g._fm = a.fm;
+    g.gameTimeDisplay = a.min || '';
     g.homeCompetitor.score = a.sh; g.awayCompetitor.score = a.sa;
     g.homeCompetitor.isWinner = !!a.wh; g.awayCompetitor.isWinner = !!a.wa;
     g.stages = a.stages || [];
@@ -595,6 +612,10 @@ function setsWon_(g) {
   return s ? num_(s.homeCompetitorScore) + '-' + num_(s.awayCompetitorScore) : '';
 }
 
+function watchDe_(d, g, now) {
+  return (d.watch || []).filter(function (w) { return w.g === g.id && (!w.t || now < w.t + 10 * 3600000); })[0];
+}
+
 function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
   games.forEach(function (g) {
     var key = 'g:' + g.id;
@@ -606,6 +627,7 @@ function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
       st: g.statusText || '', sw: setsWon_(g),
       rem: prev ? prev.rem : 0, lu: prev ? prev.lu : 0, ev: prev ? prev.ev : [],
       gh: prev && prev.gh != null ? prev.gh : h, ga: prev && prev.ga != null ? prev.ga : a,
+      card: prev ? prev.card : 0, cw: prev && prev.cw ? prev.cw : [], last: prev ? prev.last : '',
       t: t
     };
     var events = [];
@@ -617,20 +639,178 @@ function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
         else if (g.sportId === 3) tennisEvents_(g, prev, cur, events, now, t);
       } else {
         cur.gh = h; cur.ga = a;
-        if (g.sportId === 1 && g.statusGroup === 3 && !g._alt) cur.ev = detailEvents_(g).map(function (e) { return e.k; });
+        if (g.sportId === 1 && g.statusGroup === 3 && !g._alt) {
+          var passado = detailEvents_(g);
+          cur.ev = passado.map(function (e) { return e.k; });
+          var marcos = passado.filter(function (e) { return e.type === 1 || e.type === 3; });
+          if (marcos.length) cur.last = cabecaEvento_(g, marcos[marcos.length - 1]);
+        }
       }
     } catch (err) {
       // Erro em um jogo nao derruba os outros; a memoria dele fica como estava e tenta no proximo minuto.
       partial.push('jogo ' + g.id + ': ' + err);
       return;
     }
+    if (events.length) {
+      var ultimo = events.filter(function (ev) { return ev.rule !== 'remind' && ev.rule !== 'lineup'; }).slice(-1)[0];
+      if (ultimo) cur.last = (ultimo.head || ultimo.title).slice(0, 70);
+    }
+    var cartaoProntos = enviarCartoes_(g, cur, prev, events, devices, out, now);
     if (!prev || JSON.stringify(prev) !== JSON.stringify(cur)) writes[key] = JSON.stringify(cur);
-    events.forEach(function (ev) {
-      devices.forEach(function (d) {
+    if (cartaoProntos) return;
+  });
+}
+
+var CARTAO_PRINCIPAL = { remind: 1, lineup: 1, kick: 1, goal: 1, red: 1, ht: 1, end: 1, tStart: 1, tSet: 1, tEnd: 1 };
+
+// Quem acompanha recebe um cartao unico por jogo; os demais, os avisos normais.
+function enviarCartoes_(g, cur, prev, events, devices, out, now) {
+  var cartao = null;
+  devices.forEach(function (d) {
+    var w = watchDe_(d, g, now);
+    if (!w) {
+      events.forEach(function (ev) {
         if (wants_(d, g, ev.rule, now)) out.push({ dev: d, msg: { title: ev.title, body: ev.body, tag: ev.tag || ('j' + g.id), url: '#/jogo/' + g.id } });
       });
-    });
+      return;
+    }
+    var lances = events.filter(function (ev) { return w.m === 'all' || CARTAO_PRINCIPAL[ev.rule]; });
+    var primeiro = cur.cw.indexOf(d.id) < 0;
+    var resumo = g.statusGroup === 3 && now - (cur.card || 0) >= 15 * 60000;
+    if (g.statusGroup === 4 && !lances.length) return;
+    if (!lances.length && !primeiro && !resumo) return;
+    if (!cartao) cartao = montarCartao_(g, cur, lances, now);
+    out.push({ dev: d, msg: { title: cartao.title, body: cartao.body, tag: 'live' + g.id, url: '#/jogo/' + g.id, live: true } });
+    if (primeiro) cur.cw.push(d.id);
+    // Jogo acabou: o ultimo cartao fica com o resultado e a vigia termina.
+    if (g.statusGroup === 4) {
+      d.watch = (d.watch || []).filter(function (x) { return x.g !== g.id; });
+      saveDevice_(d);
+    }
   });
+  if (cartao) cur.card = now;
+  return !!cartao;
+}
+
+function par_(stats, re, g) {
+  var lista = (stats || []).filter(function (x) { return re.test(x.name || ''); });
+  var pega = function (id) { var it = lista.filter(function (x) { return x.competitorId === id; })[0]; return it ? String(it.value) : null; };
+  var u = pega(g.homeCompetitor.id), v = pega(g.awayCompetitor.id);
+  return u != null && v != null ? [u, v] : null;
+}
+
+function primeiroNum_(v) { var m = String(v).match(/\d+/); return m ? m[0] : '0'; }
+
+function estatisticasCartao_(g) {
+  try {
+    if (g._fm) {
+      var det = fetchJson_(FOTMOB + '/matchDetails?matchId=' + g._fm).content;
+      var top = det.stats.Periods.All.stats[0].stats;
+      var nomes = { BallPossesion: 'Posse de Bola', ShotsOnTarget: 'Chutes no gol', total_shots: 'Total de chutes', corners: 'Escanteios' };
+      var out = [];
+      top.forEach(function (x) {
+        if (nomes[x.key] && x.stats) {
+          out.push({ name: nomes[x.key], competitorId: g.homeCompetitor.id, value: x.key === 'BallPossesion' ? x.stats[0] + '%' : x.stats[0] });
+          out.push({ name: nomes[x.key], competitorId: g.awayCompetitor.id, value: x.key === 'BallPossesion' ? x.stats[1] + '%' : x.stats[1] });
+        }
+      });
+      return out;
+    }
+    if (g._alt) return [];
+    return fetchJson_(API + '/game/stats/?' + API_Q + '&games=' + g.id).statistics || [];
+  } catch (err) {
+    console.warn('estatisticas: ' + err);
+    return [];
+  }
+}
+
+// Quem finalizou mais nos ultimos 15 minutos.
+function pressao_(g) {
+  if (g._alt || g.statusGroup !== 3 || !(g.gameTime > 0)) return '';
+  try {
+    var d = fetchJson_(API + '/game/?' + API_Q + '&gameId=' + g.id).game;
+    var ev = (d.chartEvents && d.chartEvents.events) || [];
+    var c = [0, 0];
+    ev.forEach(function (e) {
+      var m = String(e.time).match(/(\d+)(?:\+(\d+))?/);
+      var min = m ? Number(m[1]) + Number(m[2] || 0) : -1;
+      if (min >= g.gameTime - 15 && min <= g.gameTime + 1) c[e.competitorNum === 1 ? 0 : 1]++;
+    });
+    if (c[0] + c[1] < 3 || Math.max(c[0], c[1]) < 2 * Math.min(c[0], c[1])) return '';
+    return 'Pressão: ' + shortName_(c[0] > c[1] ? g.homeCompetitor : g.awayCompetitor) + ' (' + c[0] + ' x ' + c[1] + ' chutes em 15 min)';
+  } catch (err) {
+    return '';
+  }
+}
+
+function relogio_(g) {
+  if (g.statusGroup === 4) return 'Fim';
+  if (/intervalo/i.test(g.statusText || '')) return 'Intervalo';
+  if (g.gameTimeDisplay) return String(g.gameTimeDisplay).replace(/\s/g, '');
+  if (g.gameTime > 0) return Math.floor(g.gameTime) + "'";
+  return '';
+}
+
+function sobrenome_(n) { var p = String(n || '').trim().split(/\s+/); return p[p.length - 1]; }
+
+function montarCartao_(g, cur, lances, now) {
+  var cabeca = lances.map(function (ev) { return ev.head || ev.title; }).slice(-2).join(' · ');
+  var stats = g.statusGroup === 2 ? [] : estatisticasCartao_(g);
+  var linhas = [];
+  if (g.sportId === 3) {
+    var sets = (g.stages || []).filter(function (x) { return /^S\d/.test(x.shortName || '') && x.homeCompetitorScore >= 0; });
+    var placar = sets.map(function (x) { return num_(x.homeCompetitorScore) + '-' + num_(x.awayCompetitorScore); }).join(' ');
+    var titulo = sobrenome_(g.homeCompetitor.name) + (placar ? ' ' + placar + ' ' : ' x ') + sobrenome_(g.awayCompetitor.name);
+    if (g.statusGroup === 2) {
+      linhas.push(cabeca || ('Previsto para ' + Utilities.formatDate(new Date(g.startTime), 'America/Sao_Paulo', 'HH:mm')));
+      if (g.competitionDisplayName) linhas.push(g.competitionDisplayName);
+      return { title: titulo, body: linhas.join('\n') };
+    }
+    var game = (g.stages || []).filter(function (x) { return x.id === 34 && x.isLive; })[0];
+    var fmt = function (v) { return v === 50 ? 'AD' : num_(v); };
+    linhas.push(cabeca || (g.statusText || '') + (game ? ' · Game ' + fmt(game.homeCompetitorScore) + '-' + fmt(game.awayCompetitorScore) : ''));
+    var ace = par_(stats, /^Ace$/i, g), dupla = par_(stats, /^Dupla falta/i, g), breaks = par_(stats, /^Break points/i, g), pts = par_(stats, /^Total de pontos/i, g);
+    var l2 = [], l3 = [];
+    if (ace) l2.push('Aces ' + primeiroNum_(ace[0]) + ' x ' + primeiroNum_(ace[1]));
+    if (dupla) l2.push('Duplas ' + primeiroNum_(dupla[0]) + ' x ' + primeiroNum_(dupla[1]));
+    if (breaks) l3.push('Quebras ' + primeiroNum_(breaks[0]) + ' x ' + primeiroNum_(breaks[1]));
+    if (pts) l3.push('Pontos ' + primeiroNum_(pts[0]) + ' x ' + primeiroNum_(pts[1]));
+    if (l2.length) linhas.push(l2.join(' · '));
+    if (l3.length) linhas.push(l3.join(' · '));
+    return { title: titulo, body: linhas.join('\n') };
+  }
+  var relogio = relogio_(g);
+  if (g.statusGroup === 2) {
+    var titulo2 = shortName_(g.homeCompetitor) + ' x ' + shortName_(g.awayCompetitor);
+    linhas.push(cabeca || ('Começa às ' + Utilities.formatDate(new Date(g.startTime), 'America/Sao_Paulo', 'HH:mm')));
+    if (g.competitionDisplayName) linhas.push(g.competitionDisplayName);
+    return { title: titulo2, body: linhas.join('\n') };
+  }
+  var tituloF = shortName_(g.homeCompetitor) + ' ' + cur.h + ' x ' + cur.a + ' ' + shortName_(g.awayCompetitor) + (relogio ? ' · ' + relogio : '');
+  if (cabeca) linhas.push(cabeca);
+  else if (cur.last) linhas.push('Último lance: ' + cur.last);
+  var posse = par_(stats, /^Posse de Bola/i, g), gol = par_(stats, /^Chutes no gol/i, g), chutes = par_(stats, /^Total de chutes/i, g), esc = par_(stats, /^Escanteios/i, g);
+  var a1 = [], a2 = [];
+  if (posse) a1.push('Posse ' + posse[0] + ' x ' + posse[1]);
+  if (gol) a1.push('No gol ' + gol[0] + ' x ' + gol[1]);
+  if (chutes) a2.push('Chutes ' + chutes[0] + ' x ' + chutes[1]);
+  if (esc) a2.push('Escanteios ' + esc[0] + ' x ' + esc[1]);
+  if (a1.length) linhas.push(a1.join(' · '));
+  if (a2.length) linhas.push(a2.join(' · '));
+  var pr = pressao_(g);
+  if (pr && linhas.length < 4) linhas.push(pr);
+  if (!linhas.length) linhas.push(g.competitionDisplayName || 'Ao vivo');
+  return { title: tituloF, body: linhas.join('\n') };
+}
+
+function cabecaEvento_(g, e) {
+  var side = e.comp === g.homeCompetitor.id ? g.homeCompetitor : g.awayCompetitor;
+  var quem = e.name ? e.name + (e.min ? ' ' + e.min : '') : shortName_(side);
+  if (e.type === 1) return 'GOL! ' + quem;
+  if (e.type === 3) return 'Vermelho: ' + quem + ' (' + shortName_(side) + ')';
+  if (e.type === 2) return 'Amarelo: ' + quem + ' (' + shortName_(side) + ')';
+  if (e.type === 1000) return shortName_(side) + ': entra ' + (e.name || '?') + (e.out ? ', sai ' + e.out : '') + (e.min ? ' ' + e.min : '');
+  return (e.typeName || 'Lance') + ': ' + quem;
 }
 
 function wants_(d, g, rule, now) {
@@ -663,14 +843,15 @@ function detailEvents_(game) {
   (g.members || []).forEach(function (m) { byId[m.athleteId] = m; byId[m.id] = m; });
   var penStages = {};
   (g.stages || []).forEach(function (s) { if (/p[eê]n/i.test((s.name || '') + ' ' + (s.shortName || ''))) penStages[s.id] = 1; });
+  var nome = function (id) { var m = byId[id] || {}; return m.shortName || m.name || ''; };
   return (g.events || []).filter(function (e) {
     // Cobranca de disputa de penaltis nao e gol do jogo.
-    return e.eventType && (e.eventType.id === 1 || e.eventType.id === 3) && !penStages[e.stageId];
+    return e.eventType && !penStages[e.stageId];
   }).map(function (e) {
-    var m = byId[e.playerId] || {};
     return {
       k: e.eventType.id + ':' + e.competitorId + ':' + e.gameTime + ':' + (e.playerId || 0),
-      type: e.eventType.id, name: m.shortName || m.name || '',
+      type: e.eventType.id, typeName: e.eventType.name || '', name: nome(e.playerId),
+      out: (e.extraPlayers || []).map(nome).filter(Boolean)[0] || '',
       min: e.gameTimeDisplay || '', comp: e.competitorId
     };
   });
@@ -682,7 +863,7 @@ function footballEvents_(g, prev, cur, events, now, t) {
     var mins = (t - now) / 60000;
     if (!cur.rem && mins > 0 && mins <= 20) {
       cur.rem = 1;
-      events.push({ rule: 'remind', title: title, body: 'Começa em ' + Math.max(1, Math.round(mins)) + ' min · ' + (g.competitionDisplayName || ''), tag: 'j' + g.id });
+      events.push({ rule: 'remind', title: title, head: 'Começa em ' + Math.max(1, Math.round(mins)) + ' min', body: 'Começa em ' + Math.max(1, Math.round(mins)) + ' min · ' + (g.competitionDisplayName || ''), tag: 'j' + g.id });
     }
     if (!g._alt && !cur.lu && mins > 0 && mins <= 75 && Math.floor(now / 60000) % 5 === 0) {
       var lg = fetchJson_(API + '/game/?' + API_Q + '&gameId=' + g.id).game;
@@ -694,7 +875,7 @@ function footballEvents_(g, prev, cur, events, now, t) {
     }
     return;
   }
-  if (prev && prev.s === 2 && g.statusGroup === 3) events.push({ rule: 'kick', title: 'Bola rolando', body: title, tag: 'j' + g.id });
+  if (prev && prev.s === 2 && g.statusGroup === 3) events.push({ rule: 'kick', title: 'Bola rolando', head: 'Bola rolando', body: title, tag: 'j' + g.id });
 
   var scoreChanged = prev && (prev.h !== cur.h || prev.a !== cur.a);
   // Gol anulado: reduz o que ja foi avisado para o proximo gol valer de novo.
@@ -722,10 +903,14 @@ function footballEvents_(g, prev, cur, events, now, t) {
         if (score <= told) { seen.push(e.k); return; }
         seen.push(e.k);
         if (home) cur.gh++; else cur.ga++;
-        events.push({ rule: 'goal', title: 'GOL do ' + shortName_(side) + '!', body: scoreLine_(g) + (e.name ? ' · ' + e.name : '') + (e.min ? ' ' + e.min : ''), tag: 'j' + g.id + 'g' + e.k });
+        events.push({ rule: 'goal', title: 'GOL do ' + shortName_(side) + '!', head: cabecaEvento_(g, e), body: scoreLine_(g) + (e.name ? ' · ' + e.name : '') + (e.min ? ' ' + e.min : ''), tag: 'j' + g.id + 'g' + e.k });
       } else if (e.type === 3) {
         seen.push(e.k);
-        events.push({ rule: 'red', title: 'Vermelho: ' + shortName_(side), body: (e.name ? e.name + ' · ' : '') + scoreLine_(g) + (e.min ? ' · ' + e.min : ''), tag: 'j' + g.id + 'r' + e.k });
+        events.push({ rule: 'red', title: 'Vermelho: ' + shortName_(side), head: cabecaEvento_(g, e), body: (e.name ? e.name + ' · ' : '') + scoreLine_(g) + (e.min ? ' · ' + e.min : ''), tag: 'j' + g.id + 'r' + e.k });
+      } else {
+        // Amarelo, troca e pênalti perdido so interessam a quem acompanha no modo completo.
+        seen.push(e.k);
+        events.push({ rule: 'extra', title: cabecaEvento_(g, e), head: cabecaEvento_(g, e), body: scoreLine_(g), tag: 'j' + g.id + 'x' + e.k });
       }
     });
     cur.ev = seen;

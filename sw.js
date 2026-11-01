@@ -1,5 +1,5 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
-const VERSION = 'tribuna-5';
+const VERSION = 'tribuna-6';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'fontes.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
 const IMG_CACHE = 'tribuna-img';
 
@@ -46,14 +46,22 @@ self.addEventListener('fetch', (e) => {
 self.addEventListener('push', (e) => {
   let m = {};
   try { m = e.data ? e.data.json() : {}; } catch (_) {}
-  e.waitUntil(self.registration.showNotification(m.title || 'Tribuna', {
-    body: m.body || '',
-    tag: m.tag || undefined,
-    renotify: !!m.tag,
-    icon: 'icons/icon-192.png',
-    badge: 'icons/badge-96.png',
-    data: { url: m.url || '#/agora' }
-  }));
+  e.waitUntil((async () => {
+    // Cartao ao vivo: fecha o anterior antes, porque a troca por tag nao e confiavel em todo iOS.
+    if (m.live && m.tag) {
+      const antigos = await self.registration.getNotifications({ tag: m.tag });
+      antigos.forEach((n) => n.close());
+    }
+    await self.registration.showNotification(m.title || 'Tribuna', {
+      body: m.body || '',
+      tag: m.tag || undefined,
+      renotify: !!m.tag,
+      requireInteraction: !!m.live,
+      icon: 'icons/icon-192.png',
+      badge: 'icons/badge-96.png',
+      data: { url: m.url || '#/agora' }
+    });
+  })());
 });
 
 self.addEventListener('notificationclick', (e) => {

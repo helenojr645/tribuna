@@ -74,11 +74,14 @@ const S = Object.assign({
   spoiler: false,
   quiet: { on: false, from: 23, to: 7 },
   device: null,
-  filter: 'all'
+  filter: 'all',
+  watch: {}
 }, safeParse(localStorage.getItem(KEY)));
 S.rules = { ...DEFAULT_RULES, ...S.rules };
+S.watch = S.watch || {};
 
 const R = {
+  watchData: {}, liveStats: {},
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
   home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, nav: 0, f1Tab: 'fds', f1Session: null,
   exLive: 1, exQuery: '', known: {}
@@ -238,6 +241,7 @@ function gameCard(g, opts) {
     <i class="stripe" aria-hidden="true"></i>
     <div class="meta"><span>${esc(compLine)}</span>${status}</div>
     ${rows}${when}
+    ${live ? linhaNumeros(g) : ''}
   </a>`;
 }
 function fmtPoint(v) { return v === 50 ? 'AD' : num(v); }
@@ -271,6 +275,211 @@ async function loadHomeReserva() {
 }
 function acharJogo(id) {
   return Fontes.porId[id] || ((R.home && R.home.games) || []).find((g) => g.id === id) || null;
+}
+
+// ---------- Acompanhar um jogo ----------
+const ICON_WATCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 10a6 6 0 1 1 12 0c0 6 2 7 2 7H4s2-1 2-7M10 20.500a2.200 2.200 0 0 0 4 0"/><path d="M20.500 4.500a7 7 0 0 1 1.500 4M3.500 4.500A7 7 0 0 0 2 8.500"/></svg>';
+function paresChave(stats, g) {
+  const lista = (stats && stats.statistics) || [];
+  const par = (re) => {
+    const it = lista.filter((x) => re.test(x.name || ''));
+    const h = it.find((x) => x.competitorId === g.homeCompetitor.id), a = it.find((x) => x.competitorId === g.awayCompetitor.id);
+    return h && a ? [h, a] : null;
+  };
+  return {
+    posse: par(/^Posse de Bola/i), gol: par(/^Chutes no gol/i), chutes: par(/^Total de chutes/i), esc: par(/^Escanteios/i),
+    faltas: par(/^Faltas$/i), defesas: par(/^Defesas do goleiro/i), amarelos: par(/^Cart[õo]es amarelos/i), vermelhos: par(/^Cart[õo]es vermelhos/i),
+    ace: par(/^Ace$/i), dupla: par(/^Dupla falta/i), quebras: par(/^Break points/i), pontos: par(/^Total de pontos/i)
+  };
+}
+function ultimoLance(g) {
+  const ev = (g.events || []).filter((e) => e.eventType && [1, 2, 3].includes(e.eventType.id));
+  const e = ev[ev.length - 1];
+  if (!e) return '';
+  const nome = playerName(g, e.playerId) + (e.gameTimeDisplay ? ' ' + e.gameTimeDisplay : '');
+  return e.eventType.id === 1 ? `GOL! ${nome}` : e.eventType.id === 3 ? `Vermelho: ${nome}` : `Amarelo: ${nome}`;
+}
+function pressao(g) {
+  const ev = (g.chartEvents && g.chartEvents.events) || [];
+  const agora = g.gameTime;
+  if (g.statusGroup !== 3 || !(agora > 0) || !ev.length) return '';
+  const c = [0, 0];
+  ev.forEach((e) => {
+    const m = String(e.time).match(/(\d+)(?:\+(\d+))?/);
+    const min = m ? Number(m[1]) + Number(m[2] || 0) : -1;
+    if (min >= agora - 15 && min <= agora + 1) c[e.competitorNum === 1 ? 0 : 1]++;
+  });
+  if (c[0] + c[1] < 3 || Math.max(c[0], c[1]) < 2 * Math.min(c[0], c[1])) return '';
+  const t = c[0] > c[1] ? g.homeCompetitor : g.awayCompetitor;
+  return `Pressão: ${t.shortName || t.name} (${c[0]} x ${c[1]} chutes em 15 min)`;
+}
+function cartaoTexto(g, stats) {
+  const k = paresChave(stats, g);
+  const v = (p, i) => (p ? String(p[i].value) : '');
+  const num1 = (x) => (String(x).match(/\d+/) || ['0'])[0];
+  const linhas = [];
+  const h = g.homeCompetitor, a = g.awayCompetitor;
+  if (g.sportId === 3) {
+    const sets = tennisSets(g).map((x) => `${num(x.homeCompetitorScore)}-${num(x.awayCompetitorScore)}`).join(' ');
+    const titulo = `${lastName(h.name)}${sets ? ` ${sets} ` : ' x '}${lastName(a.name)}`;
+    if (g.statusGroup === 2) return { title: titulo, linhas: [`Previsto para ${hm(g.startTime)}`, g.competitionDisplayName || ''].filter(Boolean) };
+    const gm = tennisGame(g);
+    linhas.push(`${g.statusText || ''}${gm ? ` · Game ${fmtPoint(gm.homeCompetitorScore)}-${fmtPoint(gm.awayCompetitorScore)}` : ''}`);
+    const l2 = [], l3 = [];
+    if (k.ace) l2.push(`Aces ${num1(v(k.ace, 0))} x ${num1(v(k.ace, 1))}`);
+    if (k.dupla) l2.push(`Duplas ${num1(v(k.dupla, 0))} x ${num1(v(k.dupla, 1))}`);
+    if (k.quebras) l3.push(`Quebras ${num1(v(k.quebras, 0))} x ${num1(v(k.quebras, 1))}`);
+    if (k.pontos) l3.push(`Pontos ${num1(v(k.pontos, 0))} x ${num1(v(k.pontos, 1))}`);
+    if (l2.length) linhas.push(l2.join(' · '));
+    if (l3.length) linhas.push(l3.join(' · '));
+    return { title: titulo, linhas };
+  }
+  const hn = h.shortName || h.name, an = a.shortName || a.name;
+  if (g.statusGroup === 2) return { title: `${hn} x ${an}`, linhas: [`Começa às ${hm(g.startTime)}`, g.competitionDisplayName || ''].filter(Boolean) };
+  const rel = g.statusGroup === 4 ? 'Fim' : /intervalo/i.test(g.statusText || '') ? 'Intervalo' : liveLabel(g);
+  const ult = ultimoLance(g);
+  if (ult) linhas.push(ult);
+  const l1 = [], l2 = [];
+  if (k.posse) l1.push(`Posse ${v(k.posse, 0)} x ${v(k.posse, 1)}`);
+  if (k.gol) l1.push(`No gol ${v(k.gol, 0)} x ${v(k.gol, 1)}`);
+  if (k.chutes) l2.push(`Chutes ${v(k.chutes, 0)} x ${v(k.chutes, 1)}`);
+  if (k.esc) l2.push(`Escanteios ${v(k.esc, 0)} x ${v(k.esc, 1)}`);
+  if (l1.length) linhas.push(l1.join(' · '));
+  if (l2.length) linhas.push(l2.join(' · '));
+  const pr = pressao(g);
+  if (pr && linhas.length < 4) linhas.push(pr);
+  return { title: `${hn} ${num(h.score)} x ${num(a.score)} ${an}${rel ? ' · ' + rel : ''}`, linhas };
+}
+async function loadWatch() {
+  const ids = Object.keys(S.watch);
+  await Promise.all(ids.map(async (k) => {
+    const id = Number(k);
+    const cache = R.watchData[id];
+    if (cache && Date.now() - cache.at < 40000) return;
+    try {
+      let game, stats;
+      if (id >= 7e8 || Date.now() < R.primaryDownUntil) {
+        const base = acharJogo(id);
+        if (!base) return;
+        const r = await Fontes.detalhe(base);
+        game = r.game; stats = r.stats;
+      } else {
+        const [d, st] = await Promise.all([api(`/game/?gameId=${id}`), api(`/game/stats/?games=${id}`).catch(() => null)]);
+        game = d.game; stats = st;
+      }
+      R.watchData[id] = { game, stats, at: Date.now() };
+      if (stats) R.stats[id] = stats;
+      if (game.statusGroup === 4) {
+        const w = S.watch[id];
+        if (w && !w.fim) { w.fim = Date.now(); save(); }
+        if (w && Date.now() - w.fim > 30 * 6e4) { delete S.watch[id]; save(); syncPrefs(); }
+      }
+    } catch (e) { console.warn('acompanhar', id, e); }
+  }));
+}
+// Numeros nos cartoes ao vivo dos seus times: leve, atualiza a cada minuto.
+async function loadLiveStats() {
+  if (!R.home || Date.now() < R.primaryDownUntil) return;
+  const vivos = R.home.games.filter((g) => g.statusGroup === 3 && g.sportId === 1 && gameIsFav(g) && !S.watch[g.id]).slice(0, 6);
+  await Promise.all(vivos.map(async (g) => {
+    const c = R.liveStats[g.id];
+    if (c && Date.now() - c.at < 6e4) return;
+    try { R.liveStats[g.id] = { stats: await api(`/game/stats/?games=${g.id}`), at: Date.now() }; } catch (_) {}
+  }));
+}
+function linhaNumeros(g) {
+  const c = R.liveStats[g.id];
+  if (!c || hidden(g)) return '';
+  const k = paresChave(c.stats, g);
+  const a = [];
+  if (k.posse) a.push(`Posse ${esc(k.posse[0].value)} x ${esc(k.posse[1].value)}`);
+  if (k.gol) a.push(`No gol ${esc(k.gol[0].value)} x ${esc(k.gol[1].value)}`);
+  return a.length ? `<div class="linha-num tn">${a.join(' · ')}</div>` : '';
+}
+function barraDupla(rot, p) {
+  if (!p) return '';
+  const n = (x) => { const m = String(x).match(/\(([\d.]+)%\)/) || String(x).match(/^([\d.]+)/); return m ? parseFloat(m[1]) : 0; };
+  const a = n(p[0].value), b = n(p[1].value), t = a + b;
+  const ph = t ? (a / t) * 100 : 50;
+  return `<div class="stat stat-c"><div class="stat-h"><b class="tn">${esc(p[0].value)}</b><span>${esc(rot)}</span><b class="tn">${esc(p[1].value)}</b></div>
+    <div class="stat-b" aria-hidden="true">${t ? `<i class="h" style="width:${ph.toFixed(1)}%"></i><i class="a" style="width:${(100 - ph).toFixed(1)}%"></i>` : '<i style="width:100%;background:var(--line)"></i>'}</div></div>`;
+}
+function painelAgora(g, stats, opts) {
+  opts = opts || {};
+  const k = paresChave(stats, g);
+  const pr = pressao(g);
+  const ult = ultimoLance(g);
+  const barras = (g.sportId === 3
+    ? [['Aces', k.ace], ['Duplas faltas', k.dupla], ['Quebras', k.quebras], ['Pontos ganhos', k.pontos]]
+    : opts.compacto
+      ? [['Posse de bola', k.posse], ['Chutes no gol', k.gol], ['Chutes', k.chutes]]
+      : [['Posse de bola', k.posse], ['Chutes no gol', k.gol], ['Chutes', k.chutes], ['Escanteios', k.esc], ['Faltas', k.faltas], ['Defesas do goleiro', k.defesas], ['Cartões amarelos', k.amarelos], ['Cartões vermelhos', k.vermelhos]]
+  ).filter(([r, p]) => {
+    if (!p) return false;
+    // Numero secundario zerado dos dois lados so polui.
+    const zero = (x) => !parseFloat(String(x.value));
+    return /Posse|Chutes no gol|^Chutes$/.test(r) || !(zero(p[0]) && zero(p[1]));
+  }).map(([r, p]) => barraDupla(r, p)).join('');
+  if (!barras && !ult && !pr) return g.statusGroup === 3 && !opts.compacto ? '<div class="painel-agora"><h3>Agora no jogo</h3><p class="muted" style="font-size:14px;margin:0">Este jogo não tem estatísticas ao vivo. Placar e lances seguem normais.</p></div>' : '';
+  const titulo = opts.compacto ? '' : `<h3>${g.statusGroup === 4 ? 'Como terminou' : 'Agora no jogo'}</h3>`;
+  return `<div class="painel-agora ${opts.compacto ? 'compacto' : ''}">${titulo}
+    ${ult ? `<p class="lance">${esc(ult)}</p>` : ''}${pr ? `<p class="pressao">${esc(pr)}</p>` : ''}${barras}</div>`;
+}
+function cartaoAcompanhando(id) {
+  const d = R.watchData[id];
+  const g = (d && d.game) || acharJogo(id);
+  if (!g) return '';
+  const h = g.homeCompetitor, a = g.awayCompetitor;
+  const spoil = hidden(g);
+  const live = g.statusGroup === 3, soon = g.statusGroup === 2;
+  const rel = soon ? `${dayLabel(g.startTime)} ${hm(g.startTime)}` : g.statusGroup === 4 ? 'Fim' : liveLabel(g);
+  return `<a class="acomp" href="#/jogo/${Number(id)}" style="--c1:${colorOf(h.color)};--c2:${colorOf(a.color)}">
+    <div class="acomp-top"><span>${esc(g.competitionDisplayName || '')}</span><span class="status ${live ? 'on' : ''}">${live ? '<i class="pulse" aria-hidden="true"></i>' : ''}<span class="tn">${esc(rel)}</span></span></div>
+    <div class="acomp-placar"><div class="acomp-t">${crest(h, 64)}<span>${esc(h.shortName || h.name)}</span></div>
+      <div class="acomp-n tn ${spoil ? 'spoil' : ''}">${soon ? 'x' : spoil ? '0 - 0' : g.sportId === 3 ? setsOf(g) : `${num(h.score)} - ${num(a.score)}`}</div>
+      <div class="acomp-t">${crest(a, 64)}<span>${esc(a.shortName || a.name)}</span></div></div>
+    ${soon || spoil ? '' : painelAgora(g, (d && d.stats) || R.stats[id], { compacto: true })}
+  </a>`;
+}
+function botaoAcompanhar(g, id) {
+  if (g.statusGroup === 4 && !S.watch[id]) return '';
+  const on = !!S.watch[id];
+  return `<button class="watch-btn ${on ? 'on' : ''}" data-act="watchopen" data-id="${Number(id)}">${ICON_WATCH}<span>${on ? `Acompanhando · ${S.watch[id].m === 'all' ? 'tudo' : 'principais'}` : 'Acompanhar na tela de notificações'}</span></button>`;
+}
+function abrirFolha(id) {
+  const d = R.game[id] || R.watchData[id];
+  const g = (d && d.game) || acharJogo(id);
+  if (!g) return;
+  const st = R.stats[id] || (R.watchData[id] && R.watchData[id].stats);
+  const c = cartaoTexto(g, st);
+  const on = S.watch[id];
+  const avisos = ROBO && S.device && 'Notification' in window && Notification.permission === 'granted';
+  const opcao = (v, t, sub) => `<label class="opcao"><input type="radio" name="modo" value="${v}" ${(on ? on.m : 'main') === v ? 'checked' : ''}><span><b>${t}</b><small>${sub}</small></span></label>`;
+  const el = $('#sheet');
+  el.hidden = false;
+  el.innerHTML = `<div class="folha-fundo" data-act="watchclose"></div>
+    <div class="folha" role="dialog" aria-modal="true" aria-label="Acompanhar jogo">
+      <div class="folha-alca" aria-hidden="true"></div>
+      <h2>Acompanhar sem assistir</h2>
+      <p class="folha-sub">Um cartão único deste jogo na tela de notificações. Ele se atualiza em vez de empilhar.</p>
+      <div class="previa" aria-label="Prévia do cartão">
+        <img src="icons/icon-192.png" alt="" width="38" height="38">
+        <div class="previa-t"><div class="previa-top"><b>${esc(c.title)}</b><small>agora</small></div>${c.linhas.map((l) => `<p class="tn">${esc(l)}</p>`).join('') || '<p>Placar e lances deste jogo</p>'}</div>
+      </div>
+      <fieldset class="opcoes"><legend>Quando atualizar</legend>
+        ${opcao('main', 'Principais', 'Gol, vermelho, início, intervalo e fim, mais um resumo a cada 15 minutos')}
+        ${opcao('all', 'Tudo', 'Também amarelos, trocas e pênaltis perdidos')}
+      </fieldset>
+      ${avisos ? '' : `<p class="folha-alerta">Os avisos ainda não estão ligados neste aparelho. O acompanhamento fica salvo e começa assim que você ligar.</p>`}
+      <div class="stack">
+        <button class="btn primary" data-act="watchgo" data-id="${Number(id)}">${on ? 'Salvar' : 'Acompanhar este jogo'}</button>
+        ${on ? `<button class="btn" data-act="watchstop" data-id="${Number(id)}">Parar de acompanhar</button>` : ''}
+        ${avisos ? '' : '<button class="btn" data-act="watchajustes">Ligar avisos</button>'}
+        <button class="folha-fechar" data-act="watchclose">Agora não</button>
+      </div>
+    </div>`;
+  const bt = el.querySelector('.btn.primary');
+  if (bt) bt.focus({ preventScroll: true });
 }
 
 // ---------- Carregar painel ----------
@@ -387,7 +596,11 @@ function renderAgora() {
   const now = Date.now();
   const byStart = (a, b) => new Date(a.startTime) - new Date(b.startTime);
   const favFirst = (a, b) => (gameIsFav(b) - gameIsFav(a)) || ((R.compRank[b.competitionId] || 0) - (R.compRank[a.competitionId] || 0)) || byStart(a, b);
-  const live = shown.filter((g) => g.statusGroup === 3).sort(favFirst);
+  const live = shown.filter((g) => g.statusGroup === 3 && !S.watch[g.id]).sort(favFirst);
+  const acomp = f === 'f1' ? [] : Object.keys(S.watch).map(Number).filter((id) => {
+    const g = (R.watchData[id] && R.watchData[id].game) || acharJogo(id);
+    return g && sportOk(g);
+  });
   const today = shown.filter((g) => g.statusGroup === 2 && dayKey(g.startTime) === dayKey(now)).sort(byStart);
   const next = shown.filter((g) => g.statusGroup === 2 && dayKey(g.startTime) !== dayKey(now) && new Date(g.startTime) > now).sort(byStart).slice(0, 5);
   const ended = shown.filter((g) => g.statusGroup === 4 && now - new Date(g.startTime) < 60 * 36e5).sort((a, b) => byStart(b, a)).slice(0, 8);
@@ -396,13 +609,14 @@ function renderAgora() {
 
   const chip = (k, label) => `<button class="chip" data-act="filter" data-v="${k}" aria-pressed="${f === k}">${label}</button>`;
   const section = (title, list, opts) => list.length ? `<div class="sec"><h2>${title}</h2></div><div class="stack">${list.map((g) => gameCard(g, opts)).join('')}</div>` : '';
-  const hasAny = live.length || today.length || next.length || ended.length || showF1;
+  const hasAny = acomp.length || live.length || today.length || next.length || ended.length || showF1;
   const f1Weekend = showF1 && ev.competitions.some((s) => Math.abs(new Date(s.date) - now) < 5 * 864e5);
   return `${top}
     ${R.failed && R.failCount >= 2 ? `<div class="banner">Não consegui atualizar agora. O que está na tela é da última leitura.</div>` : ''}
     ${R.roboBad ? `<div class="banner">O robô de avisos está parado. Os placares daqui seguem normais, mas os avisos podem não chegar. <a href="#/ajustes" style="text-decoration:underline">Ver detalhes</a></div>` : ''}
     <p class="hero">${heroLine(mine, mine.filter((g) => g.statusGroup === 3), S.f1.on ? ev : null)}</p>
     <div class="chips" role="group" aria-label="Filtrar esporte">${chip('all', 'Tudo')}${chip('foot', 'Futebol')}${chip('ten', 'Tênis')}${S.f1.on ? chip('f1', 'Fórmula 1') : ''}</div>
+    ${acomp.length ? `<div class="sec"><h2>Acompanhando</h2></div><div class="stack">${acomp.map(cartaoAcompanhando).join('')}</div>` : ''}
     ${f !== 'f1' ? section('Ao vivo', live) : ''}
     ${showF1 && f1Weekend ? `<div class="sec"><h2>Fórmula 1</h2></div>${f1Card(ev)}` : ''}
     ${f !== 'f1' ? section('Hoje', today) : ''}
@@ -856,6 +1070,7 @@ function renderGame(id) {
   return `<div class="d-head" style="--c1:${colorOf(h.color)};--c2:${colorOf(a.color)}">${bar(esc(g.competitionDisplayName || ''))}
       <div class="d-score">${teamLink(h)}<div class="d-center">${center}</div>${teamLink(a)}</div>
       ${hs || as ? `<div class="d-scorers"><div>${hs}</div><div>${as}</div></div>` : ''}
+      ${botaoAcompanhar(g, id)}
     </div>${tabs}<div class="d-body" role="tabpanel">${body}</div>`;
 }
 function tennisCenter(g, live) {
@@ -944,7 +1159,7 @@ function tabGame(g, spoil) {
   const info = infoBlock(g);
   if (spoil) return spoilNote(g.id) + '<div style="height:12px"></div>' + info;
   const events = (g.events || []).filter((e) => e.eventType);
-  if (!events.length) return info + (g.statusGroup === 2 ? '' : '<div style="height:12px"></div><div class="empty">Sem lances registrados ainda.</div>');
+  if (!events.length) return (g.statusGroup === 2 ? '' : painelAgora(g, R.stats[g.id])) + info + (g.statusGroup === 2 ? '' : '<div style="height:12px"></div><div class="empty">Sem lances registrados ainda.</div>');
   const hid = g.homeCompetitor.id;
   const row = (e) => {
     const home = e.competitorId === hid;
@@ -970,7 +1185,7 @@ function tabGame(g, spoil) {
     seq.push(row(e));
   });
   const ordered = g.statusGroup === 3 ? seq.reverse() : seq;
-  return `${pulseChart(g)}<div class="tl">${ordered.join('')}</div><div style="height:14px"></div>${info}`;
+  return `${g.statusGroup === 2 ? '' : painelAgora(g, R.stats[g.id])}${pulseChart(g)}<div class="tl">${ordered.join('')}</div><div style="height:14px"></div>${info}`;
 }
 function statPair(rowH, rowA) {
   const val = (r) => {
@@ -1052,7 +1267,7 @@ function tabTennis(g, id, spoil) {
   const d = R.stats[id];
   const pairs = d ? statPairs(d.statistics || [], g.homeCompetitor.id, g.awayCompetitor.id) : [];
   const legend = pairs.length ? `<div class="subhead">Números</div><div class="legend" style="justify-content:space-between;margin-bottom:12px"><span><i style="background:var(--home)"></i>${esc(g.homeCompetitor.name)}</span><span><i style="background:var(--away)"></i>${esc(g.awayCompetitor.name)}</span></div>` : '';
-  return `${grid}${legend}${pairs.map((p) => statPair(p.h, p.a)).join('')}<div style="height:14px"></div>${infoBlock(g)}`;
+  return `${grid}${g.statusGroup === 3 ? painelAgora(g, d) : ''}${legend}${pairs.map((p) => statPair(p.h, p.a)).join('')}<div style="height:14px"></div>${infoBlock(g)}`;
 }
 
 // ---------- Notificacoes ----------
@@ -1066,7 +1281,8 @@ function followsPayload() {
       c: S.teams.map((t) => t.id), comp: S.comps.map((c) => c.id), f1: S.f1.on,
       drivers: S.f1.drivers, mute: S.mute
     },
-    rules: S.rules, spoiler: S.spoiler, quiet: S.quiet
+    rules: S.rules, spoiler: S.spoiler, quiet: S.quiet,
+    watch: Object.keys(S.watch).map((id) => ({ g: Number(id), c: S.watch[id].c, m: S.watch[id].m, t: S.watch[id].t }))
   };
 }
 async function roboPost(body) {
@@ -1187,6 +1403,13 @@ function renderAjustes() {
     <div class="list">${follows || '<div class="item muted">Ninguém ainda.</div>'}
       <label class="sw"><span>Fórmula 1<small>Fim de semana no painel e avisos</small></span><input type="checkbox" role="switch" data-act="f1switch" ${S.f1.on ? 'checked' : ''}></label>
     </div>
+
+    ${Object.keys(S.watch).length ? `<div class="sec"><h2>Acompanhando agora</h2></div><div class="list">${Object.keys(S.watch).map((k) => {
+      const id = Number(k);
+      const g = (R.watchData[id] && R.watchData[id].game) || acharJogo(id);
+      const nome = g ? `${g.homeCompetitor.shortName || g.homeCompetitor.name} x ${g.awayCompetitor.shortName || g.awayCompetitor.name}` : `Jogo ${id}`;
+      return `<div class="item"><a class="grow" href="#/jogo/${id}"><div class="t1">${esc(nome)}</div><div class="t2">${S.watch[k].m === 'all' ? 'Tudo' : 'Principais'}</div></a><button class="follow" data-act="watchstop" data-id="${id}">Parar</button></div>`;
+    }).join('')}</div>` : ''}
 
     <div class="sec"><h2>Avisar no futebol</h2></div>
     <div class="set-group">
@@ -1416,7 +1639,8 @@ async function poll(force) {
   R.polling = true;
   const r = parseHash();
   try {
-    const tasks = [loadMainView()];
+    const tasks = [loadMainView(), loadWatch()];
+    if (R.mainRoute.indexOf('agora') >= 0) tasks.push(loadLiveStats());
     if (r.view === 'jogo' && r.id) tasks.push(loadGame(r.id));
     const needsHome = R.mainRoute.indexOf('agora') < 0 && (!R.home || Date.now() - R.home.at > 60000);
     if (needsHome) tasks.push(loadHome().catch(() => {}));
@@ -1450,6 +1674,34 @@ function tickFresh() {
 
 // ---------- Acoes ----------
 const ACTIONS = {
+  watchopen(el) { abrirFolha(Number(el.dataset.id)); },
+  watchclose() { const el = $('#sheet'); el.hidden = true; el.innerHTML = ''; },
+  watchajustes() { ACTIONS.watchclose(); location.hash = '#/ajustes'; },
+  watchgo(el) {
+    const id = Number(el.dataset.id);
+    const d = R.game[id] || R.watchData[id];
+    const g = (d && d.game) || acharJogo(id);
+    if (!g) return;
+    if (!S.watch[id] && Object.keys(S.watch).length >= 5) { toast('Dá para acompanhar até 5 jogos ao mesmo tempo'); return; }
+    const modo = ($('#sheet input[name=modo]:checked') || {}).value || 'main';
+    S.watch[id] = { m: modo, c: [g.homeCompetitor.id, g.awayCompetitor.id].filter(Boolean), t: new Date(g.startTime).getTime() };
+    save(); syncPrefs();
+    ACTIONS.watchclose();
+    toast(S.device ? 'Acompanhando. O cartão chega em até 1 minuto.' : 'Salvo. Ligue os avisos para receber o cartão.');
+    rerender();
+  },
+  watchstop(el) {
+    const id = Number(el.dataset.id);
+    delete S.watch[id];
+    delete R.watchData[id];
+    save(); syncPrefs();
+    ACTIONS.watchclose();
+    toast('Parou de acompanhar');
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then((r) => r.getNotifications({ tag: 'live' + id })).then((l) => l.forEach((n) => n.close())).catch(() => {});
+    }
+    rerender();
+  },
   spoiler() { S.spoiler = !S.spoiler; R.reveal.clear(); save(); syncPrefs(); toast(S.spoiler ? 'Modo sem spoiler ligado' : 'Placares visíveis'); rerender(); },
   filter(el) { S.filter = el.dataset.v; save(); rerender(); },
   jumpday(el) { const t = document.getElementById('d-' + el.dataset.v); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); },

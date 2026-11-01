@@ -357,6 +357,55 @@ img { display: block; }
 .ob-foot { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 22%); padding: 22px 0 calc(var(--safe-b) + 16px); display: grid; gap: 4px; }
 .ob-skip { min-height: 44px; font-weight: 600; color: var(--muted); }
 
+/* ---------- Acompanhar ---------- */
+.watch-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; margin-top: 14px; padding: 0 14px; border-radius: 22px; font-size: 14px; font-weight: 700; color: var(--ink); background: rgba(255, 255, 255, .1); }
+.watch-btn svg { width: 19px; height: 19px; flex: none; }
+.watch-btn.on { background: var(--volt); color: var(--volt-ink); }
+.linha-num { margin-top: 6px; padding-left: 34px; font-size: 13px; color: var(--ink-2); }
+.acomp { display: block; padding: 12px 14px 14px; border-radius: var(--r); background: linear-gradient(150deg, color-mix(in srgb, var(--c1) 15%, var(--surface)), var(--surface) 55%, color-mix(in srgb, var(--c2) 15%, var(--surface))); border: 1px solid var(--line); }
+.acomp-top { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--ink-2); }
+.acomp-top > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acomp-placar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; margin: 12px 0 4px; }
+.acomp-t { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; font-size: 14px; font-weight: 700; line-height: 1.15; min-width: 0; }
+.acomp-t .crest, .acomp-t .mono { width: 38px; height: 38px; }
+.acomp-n { font-size: 34px; font-weight: 800; letter-spacing: -.02em; white-space: nowrap; }
+.painel-agora { background: var(--surface); border-radius: var(--r); padding: 14px; margin-bottom: 14px; }
+.painel-agora h3 { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+.painel-agora .lance { margin: 0 0 8px; font-size: 15px; font-weight: 700; color: var(--volt); }
+.painel-agora .pressao { margin: 0 0 12px; font-size: 13.5px; font-weight: 600; color: var(--ink-2); }
+.painel-agora.compacto { background: none; padding: 8px 0 0; margin: 0; }
+.stat-c { margin-bottom: 10px; }
+.stat-c:last-child { margin-bottom: 0; }
+.stat-c .stat-h { font-size: 13.5px; }
+.stat-c .stat-b { height: 6px; }
+#sheet { position: fixed; inset: 0; z-index: 70; }
+.folha-fundo { position: absolute; inset: 0; background: rgba(0, 0, 0, .6); animation: fade .18s ease-out; }
+.folha { position: absolute; left: 0; right: 0; bottom: 0; max-height: 92dvh; overflow-y: auto; background: var(--surface); border-radius: 22px 22px 0 0; padding: 8px 16px calc(var(--safe-b) + 14px); animation: rise .22s cubic-bezier(.2, .8, .2, 1); }
+.folha-alca { width: 38px; height: 5px; border-radius: 3px; background: var(--line); margin: 2px auto 12px; }
+.folha h2 { font-size: 21px; font-weight: 800; letter-spacing: -.02em; }
+.folha-sub { margin: 4px 0 14px; font-size: 14.5px; color: var(--ink-2); }
+.previa { display: flex; gap: 10px; padding: 11px 12px; border-radius: 18px; background: #2A3036; margin-bottom: 14px; }
+.previa img { width: 38px; height: 38px; border-radius: 9px; flex: none; }
+.previa-t { flex: 1; min-width: 0; }
+.previa-top { display: flex; justify-content: space-between; gap: 8px; font-size: 14.5px; line-height: 1.25; }
+.previa-top b { font-weight: 700; }
+.previa-top small { flex: none; font-size: 12px; color: var(--ink-2); }
+.previa p { margin: 2px 0 0; font-size: 14px; line-height: 1.3; color: var(--ink); }
+.opcoes { border: 0; margin: 0 0 12px; padding: 0; }
+.opcoes legend { padding: 0; margin-bottom: 8px; font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.opcao { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border-radius: 14px; background: var(--bg); margin-bottom: 8px; cursor: pointer; border: 1.5px solid transparent; }
+.opcao:has(input:checked) { border-color: var(--volt); }
+.opcao input { width: 20px; height: 20px; margin: 1px 0 0; flex: none; accent-color: #D4F53C; }
+.opcao b { display: block; font-weight: 700; }
+.opcao small { display: block; font-size: 13.5px; line-height: 1.3; color: var(--ink-2); }
+.folha-alerta { margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; background: #33301A; color: #F3E8AE; font-size: 14px; }
+.folha-fechar { min-height: 44px; font-weight: 600; color: var(--muted); }
+@keyframes fade { from { opacity: 0; } }
+@media (min-width: 1000px) {
+  .folha { left: 50%; right: auto; bottom: 50%; width: 460px; transform: translate(-50%, 50%); border-radius: 22px; animation: none; padding-bottom: 14px; }
+  .folha-alca { display: none; }
+}
+
 /* Modo telao: iPhone deitado vira placar de estadio. */
 @media (orientation: landscape) and (max-height: 500px) {
   .d-head { min-height: 100dvh; display: flex; flex-direction: column; padding-left: calc(env(safe-area-inset-left, 0px) + 16px); padding-right: calc(env(safe-area-inset-right, 0px) + 16px); }

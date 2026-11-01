@@ -86,7 +86,15 @@ function sondarFontes_() {
   var res = UrlFetchApp.fetchAll(nomes.map(function (n) { return { url: lista[n], muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } }; }));
   var out = {};
   nomes.forEach(function (n, i) { out[n] = { codigo: res[i].getResponseCode(), kb: Math.round(res[i].getContentText().length / 1024) }; });
-  return { ok: true, fontes: out };
+  // Roda as reservas de verdade, para provar que o formato segue valido.
+  var agora = Date.now(), reservas = {};
+  try { var f = futebolReserva_(agora); reservas.futebol = { fonte: f.fonte, jogos: f.lista.length, aoVivo: f.lista.filter(function (x) { return x.g === 3; }).length }; } catch (e) { reservas.futebol = String(e); }
+  try { reservas.tenis = tenisReserva_().length; } catch (e) { reservas.tenis = String(e); }
+  try {
+    var ev = (fetchJson_(ESPN_WEB + '/racing/f1/scoreboard').events || [])[0];
+    reservas.f1 = { gp: ev && ev.name, sessoes: ev ? ev.competitions.length : 0 };
+  } catch (e) { reservas.f1 = String(e); }
+  return { ok: true, fontes: out, reservas: reservas };
 }
 
 function status_() {

@@ -80,7 +80,7 @@ S.rules = { ...DEFAULT_RULES, ...S.rules };
 
 const R = {
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
-  home: null, f1: null, f1Res: {}, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, nav: 0, f1Tab: 'fds', f1Session: null,
+  home: null, f1: null, f1Res: {}, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, nav: 0, f1Tab: 'fds', f1Session: null,
   exLive: 1, exQuery: '', known: {}
 };
 
@@ -101,7 +101,7 @@ function colorOf(c) {
 }
 function imgUrl(kind, id, iv, size) {
   const s = size || 48;
-  return `https://imagecache.365scores.com/image/upload/f_png,w_${s},h_${s},c_limit,q_auto:eco,dpr_2,d_${kind}:default1.png/v${Number(iv) || 1}/${kind}/${Number(id)}`;
+  return `https://imagecache.365scores.com/image/upload/f_png,w_${s},h_${s},c_limit,q_auto:eco,dpr_2/v${Number(iv) || 1}/${kind}/${Number(id)}`;
 }
 function initials(n) { return String(n || '?').split(/\s+/).slice(0, 2).map((x) => x[0]).join('').toUpperCase(); }
 function crest(c, size) {
@@ -125,7 +125,7 @@ function inTime(ms) {
   const m = Math.round(ms / 6e4);
   if (m < 60) return `${m} min`;
   const h = Math.floor(m / 60);
-  if (h < 48) return `${h}h${String(m % 60).padStart(2, '0')}`;
+  if (h < 24) return `${h}h${String(m % 60).padStart(2, '0')}`;
   return `${Math.round(h / 24)} dias`;
 }
 function num(x) { return x == null || x < 0 ? 0 : Math.round(x); }
@@ -186,6 +186,18 @@ function tennisSets(g) {
 }
 function tennisGame(g) { return (g.stages || []).find((s) => s.id === 34 && s.isLive); }
 
+function detectGoals(games) {
+  const now = Date.now();
+  games.forEach((g) => {
+    if (g.statusGroup !== 3 || g.sportId !== 1) return;
+    const h = num(g.homeCompetitor.score), a = num(g.awayCompetitor.score);
+    const p = R.goalPrev[g.id];
+    R.goalPrev[g.id] = [h, a];
+    if (!p) return;
+    if (h > p[0]) R.goals[g.id] = { side: 'h', until: now + 6e4 };
+    else if (a > p[1]) R.goals[g.id] = { side: 'a', until: now + 6e4 };
+  });
+}
 function gameCard(g, opts) {
   opts = opts || {};
   const h = g.homeCompetitor, a = g.awayCompetitor;
@@ -193,7 +205,10 @@ function gameCard(g, opts) {
   const spoil = hidden(g);
   const hWin = done && !spoil && h.isWinner, aWin = done && !spoil && a.isWinner;
   const selected = location.hash === '#/jogo/' + g.id;
-  const status = live
+  const goalNow = !spoil && R.goals[g.id] && R.goals[g.id].until > Date.now() ? R.goals[g.id].side : '';
+  const status = goalNow
+    ? `<span class="pill-gol">GOL ${esc(liveLabel(g))}</span>`
+    : live
     ? `<span class="status on"><i class="pulse" aria-hidden="true"></i><span class="tn">${esc(liveLabel(g))}</span><span class="vh">ao vivo</span></span>`
     : done ? `<span class="status">${esc(spoil ? dayLabel(g.startTime) : (g.shortStatusText || 'Fim'))}</span>`
     : `<span class="status">${esc(dayLabel(g.startTime))}</span>`;
@@ -213,8 +228,8 @@ function gameCard(g, opts) {
   } else {
     const sc = (c) => soon ? '' : `<span class="pts tn ${spoil ? 'spoil' : ''}">${spoil ? '0' : num(c.score)}</span>`;
     rows = `
-      <div class="row ${aWin ? 'lose' : ''}">${crest(h)}<span class="name">${esc(h.shortName || h.name)}</span>${sc(h)}</div>
-      <div class="row ${hWin ? 'lose' : ''}">${crest(a)}<span class="name">${esc(a.shortName || a.name)}</span>${sc(a)}</div>`;
+      <div class="row ${aWin ? 'lose' : ''} ${goalNow === 'h' ? 'scored' : ''}">${crest(h)}<span class="name">${esc(h.shortName || h.name)}</span>${sc(h)}</div>
+      <div class="row ${hWin ? 'lose' : ''} ${goalNow === 'a' ? 'scored' : ''}">${crest(a)}<span class="name">${esc(a.shortName || a.name)}</span>${sc(a)}</div>`;
   }
   const when = soon ? `<div class="when"><b class="tn">${hm(g.startTime)}</b><small>${esc(opts.hideIn ? '' : 'em ' + inTime(new Date(g.startTime) - Date.now()))}</small></div>` : '';
   return `<a class="card ${live ? 'live' : ''} ${soon ? 'has-when' : ''} ${selected ? 'selected' : ''}" href="#/jogo/${Number(g.id)}" data-g="${Number(g.id)}" style="--c1:${colorOf(h.color)};--c2:${colorOf(a.color)}">
@@ -240,7 +255,11 @@ async function loadHome() {
   // A lista "current" e a mais fresca: entra por ultimo para sobrescrever fixtures.
   const games = dedupeGames([res[1] && res[1].games, res[0] && res[0].games, res[2] && res[2].games].filter(Boolean)
     .concat(ids.length ? [] : res.map((r) => r.games)));
-  res.forEach((r) => remember(r.competitors));
+  res.forEach((r) => {
+    remember(r.competitors);
+    (r.competitions || []).forEach((c) => { R.compRank[c.id] = c.popularityRank || 0; });
+  });
+  detectGoals(games);
   R.home = { games, at: Date.now() };
   R.f1 = f1;
   R.lastOk = Date.now(); R.failed = false;
@@ -273,7 +292,18 @@ function heroLine(mine, live, f1ev) {
   if (favLive.length === 1) {
     const g = favLive[0];
     const me = isTeam(g.homeCompetitor.id) ? g.homeCompetitor : g.awayCompetitor;
-    return `<b>${esc(me.shortName || me.name)}</b> está ${g.sportId === 3 ? 'em quadra' : 'em campo'} agora.`;
+    const ot = me === g.homeCompetitor ? g.awayCompetitor : g.homeCompetitor;
+    const nome = esc(me.shortName || me.name);
+    if (g.sportId === 1 && !S.spoiler) {
+      const x = num(me.score), y = num(ot.score), min = Math.floor(g.gameTime || 0);
+      const quando = min > 0 ? ` aos ${min}'` : '';
+      if (x > y && x - y === 1 && min >= 75) return `Segura! <b>${nome}</b> vence por ${x} a ${y}${quando}.`;
+      if (x > y) return `<b>${nome}</b> na frente: ${x} a ${y}${quando}.`;
+      if (x < y && min >= 75) return `Ainda dá? <b>${nome}</b> perde por ${y} a ${x}${quando}.`;
+      if (x < y) return `<b>${nome}</b> atrás: ${y} a ${x} para o ${esc(ot.shortName || ot.name)}${quando}.`;
+      if (min > 0) return `<b>${nome}</b> empatando em ${x} a ${y}${quando}.`;
+    }
+    return `<b>${nome}</b> está ${g.sportId === 3 ? 'em quadra' : 'em campo'} agora.`;
   }
   if (live.length) return `<b>${live.length} ${live.length === 1 ? 'jogo seu' : 'jogos seus'}</b> ao vivo agora.`;
   const up = mine.filter((g) => g.statusGroup === 2 && new Date(g.startTime) > Date.now())
@@ -306,7 +336,8 @@ function freshText() {
   if (!R.lastOk) return R.failed ? 'sem conexão' : 'carregando';
   const s = Math.round((Date.now() - R.lastOk) / 1000);
   const t = s < 5 ? 'agora' : s < 60 ? `há ${s} s` : `há ${Math.round(s / 60)} min`;
-  return R.failed ? `sem conexão · ${t}` : `atualizado ${t}`;
+  if (R.failed) return s < 60 ? 'sem conexão' : `sem conexão · dados de ${t}`;
+  return `atualizado ${t}`;
 }
 
 function renderAgora() {
@@ -320,7 +351,7 @@ function renderAgora() {
   const shown = mine.filter(sportOk);
   const now = Date.now();
   const byStart = (a, b) => new Date(a.startTime) - new Date(b.startTime);
-  const favFirst = (a, b) => (gameIsFav(b) - gameIsFav(a)) || byStart(a, b);
+  const favFirst = (a, b) => (gameIsFav(b) - gameIsFav(a)) || ((R.compRank[b.competitionId] || 0) - (R.compRank[a.competitionId] || 0)) || byStart(a, b);
   const live = shown.filter((g) => g.statusGroup === 3).sort(favFirst);
   const today = shown.filter((g) => g.statusGroup === 2 && dayKey(g.startTime) === dayKey(now)).sort(byStart);
   const next = shown.filter((g) => g.statusGroup === 2 && dayKey(g.startTime) !== dayKey(now) && new Date(g.startTime) > now).sort(byStart).slice(0, 5);
@@ -333,7 +364,7 @@ function renderAgora() {
   const hasAny = live.length || today.length || next.length || ended.length || showF1;
   const f1Weekend = showF1 && ev.competitions.some((s) => Math.abs(new Date(s.date) - now) < 5 * 864e5);
   return `${top}
-    ${R.failed ? `<div class="banner">Não consegui atualizar agora. O que está na tela é da última leitura.</div>` : ''}
+    ${R.failed && R.failCount >= 2 ? `<div class="banner">Não consegui atualizar agora. O que está na tela é da última leitura.</div>` : ''}
     ${R.roboBad ? `<div class="banner">O robô de avisos está parado. Os placares daqui seguem normais, mas os avisos podem não chegar. <a href="#/ajustes" style="text-decoration:underline">Ver detalhes</a></div>` : ''}
     <p class="hero">${heroLine(mine, mine.filter((g) => g.statusGroup === 3), S.f1.on ? ev : null)}</p>
     <div class="chips" role="group" aria-label="Filtrar esporte">${chip('all', 'Tudo')}${chip('foot', 'Futebol')}${chip('ten', 'Tênis')}${S.f1.on ? chip('f1', 'Fórmula 1') : ''}</div>
@@ -389,7 +420,7 @@ function renderAgenda() {
   for (let i = 0; i < horizon; i++) {
     const d = new Date(now + i * 864e5), k = dayKey(d), n = counts[k] || 0;
     const wd = d.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '');
-    strip += `<button class="day-pill ${n ? '' : 'none'}" data-act="jumpday" data-v="${k}" aria-label="${esc(d.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }))}: ${n} eventos"><span>${esc(wd)}</span><b class="tn">${d.getDate()}</b><span class="dots">${'<i></i>'.repeat(Math.min(n, 3))}</span></button>`;
+    strip += `<button class="day-pill ${n ? '' : 'none'} ${i === 0 ? 'today' : ''}" data-act="jumpday" data-v="${k}" aria-label="${esc(d.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }))}: ${n} eventos"><span>${esc(wd)}</span><b class="tn">${d.getDate()}</b><span class="dots">${'<i></i>'.repeat(Math.min(n, 3))}</span></button>`;
   }
   let html = '', cur = '';
   items.forEach((it) => {
@@ -402,15 +433,16 @@ function renderAgenda() {
     }
     if (it.g) {
       const g = it.g;
-      const label = g.sportId === 3 ? `${g.homeCompetitor.name} x ${g.awayCompetitor.name}` : `${g.homeCompetitor.shortName || g.homeCompetitor.name} x ${g.awayCompetitor.shortName || g.awayCompetitor.name}`;
+      const label = g.sportId === 3 ? `${lastName(g.homeCompetitor.name)} x ${lastName(g.awayCompetitor.name)}` : `${g.homeCompetitor.shortName || g.homeCompetitor.name} x ${g.awayCompetitor.shortName || g.awayCompetitor.name}`;
       html += `<a class="line-item" href="#/jogo/${Number(g.id)}"><span class="h tn">${hm(it.t)}</span><span class="mid"><span class="t1" style="display:block">${esc(label)}</span><span class="t2" style="display:block">${esc(g.competitionDisplayName || '')}</span></span><span class="tag">${g.sportId === 3 ? 'Tênis' : 'Futebol'}</span></a>`;
     } else {
-      html += `<a class="line-item" href="#/f1"><span class="h tn">${hm(it.t)}</span><span class="mid"><span class="t1" style="display:block">${esc(ptSession(it.s.session_name))}</span><span class="t2" style="display:block">GP ${esc(it.s.country_name)} · ${esc(it.s.location)}</span></span><span class="tag">F1</span></a>`;
+      html += `<a class="line-item" href="#/f1"><span class="h tn">${hm(it.t)}</span><span class="mid"><span class="t1" style="display:block">${esc(ptSession(it.s.session_name))}</span><span class="t2" style="display:block">GP ${esc(F1_GP[it.s.country_name] || it.s.country_name)} · ${esc(it.s.circuit_short_name || it.s.location)}</span></span><span class="tag">F1</span></a>`;
     }
   });
   return `${head}<div class="weekstrip">${strip}</div>${html || '<div class="empty"><b>Agenda vazia</b>Nenhum evento dos seus seguidos nos próximos dias.</div>'}
     <p class="muted" style="font-size:13px;margin-top:14px">Horários no fuso deste aparelho. Jogos de tênis só aparecem quando a organização publica a programação do dia.</p>`;
 }
+function lastName(n) { const p = String(n || '').trim().split(/\s+/); return n && n.includes('/') ? n : p[p.length - 1]; }
 function ptSession(n) {
   return ({ 'Practice 1': 'Treino 1', 'Practice 2': 'Treino 2', 'Practice 3': 'Treino 3', Qualifying: 'Classificação', Race: 'Corrida', Sprint: 'Sprint', 'Sprint Qualifying': 'Classif. Sprint', 'Sprint Shootout': 'Classif. Sprint' })[n] || n;
 }
@@ -695,7 +727,8 @@ async function loadGame(id) {
   R.game[id] = d;
   R.lastOk = Date.now(); R.failed = false;
   const tab = R.gameTab[id];
-  if (tab === 'num' || d.game.sportId === 3) {
+  // Numeros oficiais sempre: o selo de xG usa o oficial, mais confiavel que a soma das finalizacoes.
+  if (tab === 'num' || tab == null || tab === 'jogo' || d.game.sportId === 3) {
     R.stats[id] = await api(`/game/stats/?games=${id}`).catch(() => R.stats[id]);
   }
   if (tab === 'tab' && !R.standings[d.game.competitionId]) {
@@ -713,7 +746,7 @@ function renderGame(id) {
   const center = soon
     ? `<div class="big tn" style="font-size:30px;padding-top:8px">${hm(g.startTime)}</div><small>${esc(dayLabel(g.startTime))}${new Date(g.startTime) > Date.now() ? ' · em ' + inTime(new Date(g.startTime) - Date.now()) : ''}</small>`
     : spoil ? `<button class="btn" style="min-height:44px;margin-top:6px;font-size:14px" data-act="reveal" data-id="${g.id}">Mostrar placar</button>`
-    : tennis ? `<div class="big tn">${setsOf(g)}</div><small class="${live ? 'on' : ''}">${esc(live ? liveLabel(g) : g.statusText)}</small>`
+    : tennis ? tennisCenter(g, live)
     : `<div class="big tn">${num(h.score)} - ${num(a.score)}</div><small class="${live ? 'on' : ''}">${esc(live ? liveLabel(g) : g.statusText)}</small>${(g.stages || []).filter((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`) && x.homeCompetitorScore >= 0).map((x) => `<small class="tn">Pênaltis ${num(x.homeCompetitorScore)} - ${num(x.awayCompetitorScore)}</small>`).join('')}`;
   const penStage = (g.stages || []).find((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`));
   const scorers = (cid) => (g.events || []).filter((e) => e.eventType.id === 1 && e.competitorId === cid && !(penStage && e.stageId === penStage.id)).map((e) => `${esc(playerName(g, e.playerId))} ${esc(e.gameTimeDisplay || '')}`).join('<br>');
@@ -721,7 +754,8 @@ function renderGame(id) {
   const tabsDef = tennis ? [['jogo', 'Jogo']] : [['jogo', 'Jogo'], ['num', 'Números'], ['esc', 'Escalações'], ...(g.hasStandings ? [['tab', 'Tabela']] : [])];
   const cur = R.gameTab[id] || 'jogo';
   const tabs = tabsDef.length > 1 ? `<div class="tabs" role="tablist">${tabsDef.map(([k, t]) => `<button class="tab" role="tab" data-act="gtab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div>` : '';
-  const hs = !tennis && !spoil ? scorers(h.id) : '', as = !tennis && !spoil ? scorers(a.id) : '';
+  const showScorers = !tennis && !spoil && cur !== 'jogo';
+  const hs = showScorers ? scorers(h.id) : '', as = showScorers ? scorers(a.id) : '';
   let body;
   if (tennis) body = tabTennis(g, id, spoil);
   else if (cur === 'num') body = spoil ? spoilNote(g.id) : tabStats(g, id);
@@ -733,6 +767,13 @@ function renderGame(id) {
       <div class="d-score">${teamLink(h)}<div class="d-center">${center}</div>${teamLink(a)}</div>
       ${hs || as ? `<div class="d-scorers"><div>${hs}</div><div>${as}</div></div>` : ''}
     </div>${tabs}<div class="d-body" role="tabpanel">${body}</div>`;
+}
+function tennisCenter(g, live) {
+  const cur = live && (g.stages || []).find((x) => /^S\d/.test(x.shortName || '') && x.isLive);
+  if (!cur) return `<div class="big tn">${setsOf(g)}</div><small>${esc(g.statusText)}</small>`;
+  const gm = tennisGame(g);
+  const pts = gm ? ` · ${esc(fmtPoint(gm.homeCompetitorScore))}-${esc(fmtPoint(gm.awayCompetitorScore))}` : '';
+  return `<div class="big tn">${num(cur.homeCompetitorScore)} - ${num(cur.awayCompetitorScore)}</div><small class="on tn">${esc(cur.name)}${pts}</small><small class="tn">Sets ${setsOf(g)}</small>`;
 }
 function setsOf(g) {
   const s = (g.stages || []).find((x) => x.id === 35 || x.shortName === 'Sets');
@@ -759,11 +800,13 @@ function pulseChart(g) {
   const minOf = (t) => { const m = String(t).match(/(\d+)(?:\+(\d+))?/); return m ? Number(m[1]) + Number(m[2] || 0) : 0; };
   const pts = ev.map((e) => ({ m: minOf(e.time), xg: parseFloat(e.xg) || 0, home: e.competitorNum === 1, goal: e.outcome && e.outcome.name === 'Gol', out: e.outcome ? e.outcome.name : '', time: e.time, player: playerName(g, e.playerId) }));
   const maxM = Math.max(90, ...pts.map((p) => p.m));
-  const W = 340, H = 164, mid = 74, L = 6, R0 = 6, amp = 56;
+  const height = (p) => 8 + Math.sqrt(Math.min(1, p.xg)) * 56;
+  const up = Math.max(16, ...pts.filter((p) => p.home).map(height));
+  const down = Math.max(16, ...pts.filter((p) => !p.home).map(height));
+  const W = 340, top = 10, mid = top + up, H = mid + down + 24, L = 6, R0 = 6;
   const x = (m) => L + (m / maxM) * (W - L - R0);
-  const marks = pts.map((p) => {
-    const hgt = 8 + Math.sqrt(Math.min(1, p.xg)) * amp;
-    const y2 = p.home ? mid - hgt : mid + hgt;
+  const mark = (p) => {
+    const y2 = p.home ? mid - height(p) : mid + height(p);
     const col = p.home ? 'var(--home)' : 'var(--away)';
     const team = p.home ? (g.homeCompetitor.shortName || g.homeCompetitor.name) : (g.awayCompetitor.shortName || g.awayCompetitor.name);
     const tip = `${p.time} · ${team}${p.player ? ' · ' + p.player : ''} · ${p.out} · xG ${p.xg.toFixed(2)}`;
@@ -771,12 +814,40 @@ function pulseChart(g) {
       <line x1="${x(p.m).toFixed(1)}" x2="${x(p.m).toFixed(1)}" y1="${mid}" y2="${y2.toFixed(1)}" stroke="${col}" stroke-width="2" stroke-linecap="round"/>
       ${p.goal ? `<circle cx="${x(p.m).toFixed(1)}" cy="${y2.toFixed(1)}" r="6" fill="var(--ink)" stroke="${col}" stroke-width="3"/>` : `<circle cx="${x(p.m).toFixed(1)}" cy="${y2.toFixed(1)}" r="4" fill="${col}" stroke="var(--surface)" stroke-width="2"/>`}
       <rect x="${(x(p.m) - 7).toFixed(1)}" y="${p.home ? 0 : mid}" width="14" height="${p.home ? mid : H - mid - 14}" fill="transparent"/></g>`;
-  }).join('');
+  };
+  // Gol vai por ultimo para nao ficar coberto por finalizacoes vizinhas.
+  const marks = pts.filter((p) => !p.goal).concat(pts.filter((p) => p.goal)).map(mark).join('');
   const ticks = [0, 45, 90].map((m) => `<text x="${x(m).toFixed(1)}" y="${H - 2}" font-size="11" fill="var(--muted)" text-anchor="${m === 0 ? 'start' : m === 90 ? 'end' : 'middle'}">${m}'</text>`).join('');
-  return `<section class="viz"><h3>Pulso do jogo</h3><p>Cada traço é uma finalização. Quanto mais alto, maior a chance de gol. Toque para ver.</p>
-    <div class="legend"><span><i style="background:var(--home)"></i>${esc(g.homeCompetitor.shortName || g.homeCompetitor.name)} (acima)</span><span><i style="background:var(--away)"></i>${esc(g.awayCompetitor.shortName || g.awayCompetitor.name)} (abaixo)</span><span><i style="background:var(--ink)"></i>Gol</span></div>
+  const hName = g.homeCompetitor.shortName || g.homeCompetitor.name, aName = g.awayCompetitor.shortName || g.awayCompetitor.name;
+  return `<section class="viz"><h3>Pulso do jogo</h3>${xgVerdict(g, pts, hName, aName, R.stats[g.id])}<p>Cada traço é uma finalização. Quanto mais longo, maior a chance de gol. Toque para ver.</p>
+    <div class="legend"><span><i style="background:var(--home)"></i>${esc(hName)} (acima)</span><span><i style="background:var(--away)"></i>${esc(aName)} (abaixo)</span><span><i style="background:var(--ink)"></i>Gol</span></div>
     <svg viewBox="0 0 ${W} ${H}" role="group" aria-label="Finalizações por minuto"><line x1="${L}" x2="${W - R0}" y1="${mid}" y2="${mid}" stroke="var(--line)"/>${ticks}${marks}</svg>
     <div class="tip tn" id="pulse-tip" aria-live="polite"></div></section>`;
+}
+// Compara o placar com a chance criada (xG). Para quem le risco: resultado nem sempre e desempenho.
+function xgVerdict(g, pts, hName, aName, stats) {
+  const sum = (home) => pts.filter((p) => p.home === home).reduce((t, p) => t + p.xg, 0);
+  const official = (cid) => {
+    const it = ((stats && stats.statistics) || []).find((x) => x.competitorId === cid && /xG|esperados/i.test(x.name || ''));
+    const v = it ? parseFloat(it.value) : NaN;
+    return Number.isFinite(v) ? v : null;
+  };
+  const oh = official(g.homeCompetitor.id), oa = official(g.awayCompetitor.id);
+  const xh = oh != null && oa != null ? oh : sum(true), xa = oh != null && oa != null ? oa : sum(false);
+  const gh = num(g.homeCompetitor.score), ga = num(g.awayCompetitor.score);
+  const nums = `xG ${xh.toFixed(2).replace('.', ',')} x ${xa.toFixed(2).replace('.', ',')}`;
+  const diff = xh - xa;
+  let tag = '', txt = '';
+  if (g.statusGroup === 4 && Math.abs(diff) >= 0.8 && ((diff > 0 && gh <= ga) || (diff < 0 && ga <= gh))) {
+    tag = 'Placar mentiroso';
+    txt = `${diff > 0 ? hName : aName} criou bem mais e não venceu`;
+  } else if (Math.abs(diff) >= 1) {
+    tag = 'Domínio';
+    txt = `${diff > 0 ? hName : aName} criou bem mais`;
+  } else {
+    txt = g.statusGroup === 4 ? 'Chances parecidas' : 'Jogo equilibrado até aqui';
+  }
+  return `<div class="verdict">${tag ? `<b>${esc(tag)}</b>` : ''}<span>${esc(txt)} · <span class="tn">${nums}</span></span></div>`;
 }
 function tabGame(g, spoil) {
   const info = infoBlock(g);
@@ -857,7 +928,7 @@ function tabLineups(g) {
     if (!y) return '';
     const line = y.fieldLine, sideX = y.fieldSide;
     // Mandante ataca para baixo e visitante para cima, cada um na propria metade.
-    const top = side === 'h' ? 6 + line * 0.36 : 94 - line * 0.36;
+    const top = side === 'h' ? 5 + line * 0.38 : 95 - line * 0.38;
     const left = 12 + (side === 'h' ? sideX : 100 - sideX) * 0.76;
     return `<div class="pl ${side}" style="top:${top.toFixed(1)}%;left:${left.toFixed(1)}%"><b class="tn">${esc(m.jerseyNumber != null ? m.jerseyNumber : '')}</b><span>${esc(m.shortName || m.name || '')}</span></div>`;
   };
@@ -865,10 +936,9 @@ function tabLineups(g) {
   const subs = (l) => l.members.filter((x) => x.status === 2);
   const out = (l) => l.members.filter((x) => x.status === 3);
   const nm = (x) => { const m = mem[x.id] || {}; return `${m.jerseyNumber != null ? m.jerseyNumber + '  ' : ''}${m.shortName || m.name || ''}`; };
-  const pitch = hasField(hl) && hasField(al) ? `<div class="pitch" role="img" aria-label="Escalações em campo">
-      <span class="pitch-label" style="top:8px">${esc(g.homeCompetitor.shortName || g.homeCompetitor.name)} · ${esc(hl.formation || '')}</span>
-      <span class="pitch-label" style="bottom:8px">${esc(g.awayCompetitor.shortName || g.awayCompetitor.name)} · ${esc(al.formation || '')}</span>
-      ${starters(hl).map((x) => pl(x, 'h')).join('')}${starters(al).map((x) => pl(x, 'a')).join('')}</div>` : '';
+  const teamLine = (c, l) => `<div class="pitch-label"><span>${esc(c.shortName || c.name)}</span><b class="tn">${esc(l.formation || '')}</b></div>`;
+  const pitch = hasField(hl) && hasField(al) ? `${teamLine(g.homeCompetitor, hl)}<div class="pitch" role="img" aria-label="Escalações em campo">
+      ${starters(hl).map((x) => pl(x, 'h')).join('')}${starters(al).map((x) => pl(x, 'a')).join('')}</div>${teamLine(g.awayCompetitor, al)}` : '';
   const listBlock = (title, arr) => arr.length ? `<div class="subhead">${title}</div><div class="subs tn">${arr.map((x) => `<div>${esc(nm(x))}</div>`).join('')}</div>` : '';
   const prob = hl.status && !/confirm/i.test(hl.status) ? `<p class="muted" style="font-size:13px;margin-bottom:10px">${esc(hl.status)}. Pode mudar até o início.</p>` : '';
   return `${prob}${pitch}
@@ -974,7 +1044,7 @@ function pushPanel() {
   if (!ROBO) return `<div class="panel"><h3>Avisos</h3><p>O robô de avisos ainda não foi ligado.</p></div>`;
   if (isIOS() && !isStandalone()) {
     return `<div class="panel"><h3>Instale para receber avisos</h3><p>No iPhone, os avisos só funcionam com a Tribuna na Tela de Início.</p>
-      <ol class="steps"><li>Toque no botão <b>Compartilhar</b> do Safari (quadrado com seta para cima).</li><li>Toque em <b>Adicionar à Tela de Início</b>.</li><li>Toque em <b>Adicionar</b> e abra a Tribuna pelo ícone novo.</li></ol></div>`;
+      <ol class="steps"><li><span>Toque no botão <b>Compartilhar</b> do Safari (quadrado com seta para cima).</span></li><li><span>Toque em <b>Adicionar à Tela de Início</b>.</span></li><li><span>Toque em <b>Adicionar</b> e abra a Tribuna pelo ícone novo.</span></li></ol></div>`;
   }
   if (!pushCapable()) return `<div class="panel"><h3>Avisos</h3><p>Este navegador não oferece notificações. No iPhone, é preciso iOS 16.4 ou mais novo.</p></div>`;
   if (Notification.permission === 'denied') {
@@ -1112,7 +1182,9 @@ async function loadObF1() {
     await loadF1Static();
     const b = $('#obf1');
     if (b) b.innerHTML = `<div class="sec"><h2>Pilotos para destacar (opcional)</h2></div>${f1Drivers()}`;
-  } catch (_) { if (box) box.innerHTML = ''; }
+  } catch (_) {
+    if (box) box.innerHTML = '<p class="muted" style="font-size:14px;margin-top:12px">Não consegui carregar a lista de pilotos agora. Dá para escolher depois na tela de F1.</p>';
+  }
 }
 async function loadF1Static() {
   if (R.f1Static) return;
@@ -1190,6 +1262,8 @@ function renderDetail() {
     document.body.style.overflow = matchMedia('(min-width:1000px)').matches ? '' : 'hidden';
     const html = renderGame(r.id);
     if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
+    const me = R.scrollMe && el.querySelector('.table tr.me');
+    if (me) { me.scrollIntoView({ block: 'center' }); R.scrollMe = false; }
   } else {
     el.classList.remove('open');
     document.body.style.overflow = '';
@@ -1250,10 +1324,12 @@ async function poll(force) {
     await Promise.all(tasks);
   } catch (e) {
     R.failed = true;
+    R.failCount++;
     console.warn('falha ao atualizar', e);
   } finally {
     R.polling = false;
   }
+  if (!R.failed) R.failCount = 0;
   renderMainView();
   renderDetail();
   renderNav();
@@ -1322,7 +1398,7 @@ const ACTIONS = {
   revealleague(el) { R.reveal.add('l' + el.dataset.v); rerender(); },
   revealf1(el) { R.reveal.add('f1' + el.dataset.v); rerender(); },
   reveal(el) { R.reveal.add(Number(el.dataset.id)); rerender(); },
-  gtab(el) { R.gameTab[Number(el.dataset.id)] = el.dataset.v; renderDetail(); poll(true); },
+  gtab(el) { R.gameTab[Number(el.dataset.id)] = el.dataset.v; R.scrollMe = el.dataset.v === 'tab'; renderDetail(); poll(true); },
   close() { location.hash = R.mainRoute; },
   back() { if (R.nav > 1) history.back(); else location.hash = '#/agora'; },
   async pushon() {

@@ -789,7 +789,7 @@ function pressao_(g) {
       var min = m ? Number(m[1]) + Number(m[2] || 0) : -1;
       if (min >= g.gameTime - 15 && min <= g.gameTime + 1) c[e.competitorNum === 1 ? 0 : 1]++;
     });
-    if (c[0] + c[1] < 3 || Math.max(c[0], c[1]) < 2 * Math.min(c[0], c[1])) return '';
+    if (Math.abs(c[0] - c[1]) < 3 || Math.max(c[0], c[1]) < 2 * Math.min(c[0], c[1])) return '';
     return 'Pressão: ' + shortName_(c[0] > c[1] ? g.homeCompetitor : g.awayCompetitor) + ' (' + c[0] + ' x ' + c[1] + ' chutes em 15 min)';
   } catch (err) {
     return '';

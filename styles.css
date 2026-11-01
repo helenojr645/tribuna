@@ -60,8 +60,12 @@ img { display: block; }
 #detail.open {
   display: block; position: fixed; inset: 0; z-index: 40; background: var(--bg);
   overflow-y: auto; -webkit-overflow-scrolling: touch;
-  animation: rise .22s cubic-bezier(.2, .8, .2, 1);
+  animation: entra-lado .28s cubic-bezier(.2, .8, .2, 1);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, .45);
 }
+#detail.open.saindo { animation: sai-lado .2s cubic-bezier(.4, 0, 1, 1) forwards; pointer-events: none; }
+@keyframes entra-lado { from { transform: translateX(100%); } }
+@keyframes sai-lado { to { transform: translateX(100%); } }
 @keyframes rise { from { transform: translateY(24px); opacity: 0; } }
 
 @media (min-width: 1000px) {
@@ -77,7 +81,7 @@ img { display: block; }
   .nav-item[aria-current="page"] { background: var(--surface); }
   .nav-dot { top: 12px; left: 28px; }
   #main { height: 100dvh; overflow-y: auto; width: 100%; max-width: none; padding: 20px 24px 40px; border-right: 1px solid var(--line); }
-  #detail, #detail.open { display: block; position: static; height: 100dvh; overflow-y: auto; animation: none; }
+  #detail, #detail.open, #detail.open.saindo { display: block; position: static; height: 100dvh; overflow-y: auto; animation: none; box-shadow: none; transform: none; }
 }
 
 /* ---------- Topo ---------- */
@@ -356,6 +360,33 @@ img { display: block; }
 .ob-body { flex: 1; }
 .ob-foot { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 22%); padding: 22px 0 calc(var(--safe-b) + 16px); display: grid; gap: 4px; }
 .ob-skip { min-height: 44px; font-weight: 600; color: var(--muted); }
+
+/* ---------- Movimento ---------- */
+body { overflow-x: clip; }
+.anim-dir { animation: tela-dir .26s cubic-bezier(.2, .8, .2, 1); }
+.anim-esq { animation: tela-esq .26s cubic-bezier(.2, .8, .2, 1); }
+.anim-fade { animation: tela-fade .22s ease-out; }
+@keyframes tela-dir { from { opacity: 0; transform: translateX(28px); } }
+@keyframes tela-esq { from { opacity: 0; transform: translateX(-28px); } }
+@keyframes tela-fade { from { opacity: 0; transform: translateY(6px); } }
+/* Cartoes entram em cascata, so os primeiros: o resto ja esta fora da tela. */
+.anim-cards .card, .anim-cards .acomp, .anim-cards .f1card, .anim-cards .line-item, .anim-cards .list { animation: surge .3s cubic-bezier(.2, .8, .2, 1) both; }
+.anim-cards .stack > :nth-child(2) { animation-delay: 40ms; }
+.anim-cards .stack > :nth-child(3) { animation-delay: 80ms; }
+.anim-cards .stack > :nth-child(4) { animation-delay: 120ms; }
+.anim-cards .stack > :nth-child(n+5) { animation-delay: 150ms; }
+@keyframes surge { from { opacity: 0; transform: translateY(10px); } }
+/* Resposta ao toque */
+.card, .acomp, .f1card, .line-item, .chip, .btn, .follow, .watch-btn, .pick, .nav-item, .tab, .day-pill, .icon-btn { transition: transform .12s ease, background-color .15s ease, color .15s ease, border-color .15s ease; }
+.card:active, .acomp:active, .f1card:active, .line-item:active, .pick:active, .day-pill:active { transform: scale(.985); }
+.chip:active, .btn:active, .follow:active, .watch-btn:active, .icon-btn:active { transform: scale(.96); }
+.nav-item[aria-current="page"] svg { animation: nav-pop .28s cubic-bezier(.2, 1.4, .4, 1); }
+@keyframes nav-pop { from { transform: scale(.82); } }
+.tab { transition: color .15s ease, border-color .2s ease; }
+/* Gol: o numero salta */
+.flash .row.scored .pts { animation: gol-pop .5s cubic-bezier(.2, 1.6, .4, 1); }
+@keyframes gol-pop { from { transform: scale(1.5); } }
+.relogio-grande { font-size: 17px !important; font-weight: 700 !important; letter-spacing: .01em; }
 
 /* ---------- Acompanhar ---------- */
 .watch-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; margin-top: 14px; padding: 0 14px; border-radius: 22px; font-size: 14px; font-weight: 700; color: var(--ink); background: rgba(255, 255, 255, .1); }

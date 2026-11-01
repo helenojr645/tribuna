@@ -81,6 +81,7 @@ S.rules = { ...DEFAULT_RULES, ...S.rules };
 S.watch = S.watch || {};
 
 const R = {
+  relogio: {}, animar: null, telaAnterior: null,
   watchData: {}, liveStats: {},
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
   home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, nav: 0, f1Tab: 'fds', f1Session: null,
@@ -178,7 +179,8 @@ function gameIsFav(g) { return isTeam(g.homeCompetitor.id) || isTeam(g.awayCompe
 function liveLabel(g) {
   const st = g.statusText || '';
   if (g.sportId === 3) return st || 'Ao vivo';
-  if (/intervalo|pênalti|penalti|prorrog/i.test(st) && !g.gameTimeDisplay) return st;
+  if (/intervalo/i.test(st)) return 'Intervalo';
+  if (/pênalti|penalti|prorrog/i.test(st) && !g.gameTimeDisplay) return st;
   if (g.gameTimeDisplay) return g.gameTimeDisplay.replace(/\s/g, '');
   if (g.gameTime > 0) return Math.floor(g.gameTime) + "'";
   return st || 'Ao vivo';
@@ -214,7 +216,7 @@ function gameCard(g, opts) {
     : goalNow
     ? `<span class="pill-gol">GOL ${esc(liveLabel(g))}</span>`
     : live
-    ? `<span class="status on"><i class="pulse" aria-hidden="true"></i><span class="tn">${esc(liveLabel(g))}</span><span class="vh">ao vivo</span></span>`
+    ? `<span class="status on"><i class="pulse" aria-hidden="true"></i>${spanRelogio(g.id, liveLabel(g))}<span class="vh">ao vivo</span></span>`
     : done ? `<span class="status">${esc(spoil ? dayLabel(g.startTime) : (g.shortStatusText || 'Fim'))}</span>`
     : `<span class="status">${esc(dayLabel(g.startTime))}</span>`;
   const compLine = g.competitionDisplayName || '';
@@ -236,7 +238,7 @@ function gameCard(g, opts) {
       <div class="row ${aWin ? 'lose' : ''} ${goalNow === 'h' ? 'scored' : ''}">${crest(h)}<span class="name">${esc(h.shortName || h.name)}</span>${sc(h)}</div>
       <div class="row ${hWin ? 'lose' : ''} ${goalNow === 'a' ? 'scored' : ''}">${crest(a)}<span class="name">${esc(a.shortName || a.name)}</span>${sc(a)}</div>`;
   }
-  const when = soon ? `<div class="when"><b class="tn">${hm(g.startTime)}</b><small>${esc(opts.hideIn ? '' : 'em ' + inTime(new Date(g.startTime) - Date.now()))}</small></div>` : '';
+  const when = soon ? `<div class="when"><b class="tn">${hm(g.startTime)}</b><small>${spanAte(g.startTime, 'em ' + inTime(new Date(g.startTime) - Date.now()))}</small></div>` : '';
   return `<a class="card ${live ? 'live' : ''} ${soon ? 'has-when' : ''} ${selected ? 'selected' : ''}" href="#/jogo/${Number(g.id)}" data-g="${Number(g.id)}" style="--c1:${colorOf(h.color)};--c2:${colorOf(a.color)}">
     <i class="stripe" aria-hidden="true"></i>
     <div class="meta"><span>${esc(compLine)}</span>${status}</div>
@@ -266,6 +268,8 @@ async function loadHomeReserva() {
   const querTenis = S.teams.some((t) => t.sportId === 3) || conhecidos.some((g) => g.sportId === 3);
   const alt = await Fontes.todos(querTenis);
   const games = Fontes.reconciliar(alt.jogos, conhecidos, S.teams);
+  conferirRelogios(games);
+  games.forEach((g) => { if (g.preciseGameTime) registrarRelogio(g); });
   detectGoals(games);
   R.fonte = alt.fonte;
   R.home = { games, at: Date.now() };
@@ -276,6 +280,71 @@ async function loadHomeReserva() {
 function acharJogo(id) {
   return Fontes.porId[id] || ((R.home && R.home.games) || []).find((g) => g.id === id) || null;
 }
+
+// ---------- Relogio do jogo ----------
+// A fonte manda minuto, segundo e se o relogio esta correndo. Entre leituras ele anda aqui.
+function registrarRelogio(g) {
+  const p = g && g.preciseGameTime;
+  if (!p || g.statusGroup !== 3) { if (g) delete R.relogio[g.id]; return; }
+  R.relogio[g.id] = { m: p.minutes, s: p.seconds, run: !!p.autoProgress, dir: p.clockDirection === -1 ? -1 : 1, at: Date.now(), st: g.statusText || '' };
+}
+// Mudou de tempo (intervalo, segundo tempo): o relogio antigo nao vale mais.
+function conferirRelogios(games) {
+  games.forEach((g) => {
+    const r = R.relogio[g.id];
+    if (!r) return;
+    if (g.statusGroup !== 3 || (g.statusText && r.st && g.statusText !== r.st)) delete R.relogio[g.id];
+  });
+}
+function relogioTexto(id) {
+  const r = R.relogio[id];
+  if (!r || !r.run) return null;
+  const passou = Math.floor((Date.now() - r.at) / 1000);
+  // Muito tempo sem ler a fonte: melhor o minuto conhecido que um relogio inventado.
+  if (passou > 600 || passou < 0) return null;
+  const total = Math.max(0, r.m * 60 + r.s + r.dir * passou);
+  const m = Math.floor(total / 60), ss = String(total % 60).padStart(2, '0');
+  const base = /primeiro tempo/i.test(r.st) ? 45 : /segundo tempo/i.test(r.st) ? 90 : 0;
+  return base && m >= base ? `${base}+${m - base}:${ss}` : `${m}:${ss}`;
+}
+function contagem(ms) {
+  if (ms <= 0) return 'a qualquer momento';
+  const t = Math.floor(ms / 1000);
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), ss = String(t % 60).padStart(2, '0');
+  if (h >= 24) return null;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+function tickRelogios() {
+  document.querySelectorAll('[data-relogio]').forEach((el) => {
+    const v = relogioTexto(el.dataset.relogio) || el.dataset.base || '';
+    if (el.textContent !== v) el.textContent = v;
+  });
+  document.querySelectorAll('[data-ate]').forEach((el) => {
+    const ms = new Date(el.dataset.ate) - Date.now();
+    const c = contagem(ms);
+    const v = c == null ? (el.dataset.base || '') : ms <= 0 ? c : `${el.dataset.pref || 'em '}${c}`;
+    if (el.textContent !== v) el.textContent = v;
+  });
+}
+function spanRelogio(id, base) { return `<span class="tn" data-relogio="${Number(id)}" data-base="${esc(base)}">${esc(base)}</span>`; }
+function spanAte(quando, base, pref) { return `<span class="tn" data-ate="${esc(quando)}" data-base="${esc(base)}"${pref ? ` data-pref="${esc(pref)}"` : ''}>${esc(base)}</span>`; }
+
+// ---------- Animacoes de tela ----------
+const ORDEM_TELAS = { agora: 0, agenda: 1, explorar: 2, ajustes: 3, time: 4, liga: 4, f1: 4 };
+function animar(el, classe, ms) {
+  if (!el) return;
+  // A cascata dos cartoes convive com o deslize da tela; cada familia tem seu proprio tempo.
+  const cascata = classe === 'anim-cards';
+  const chave = cascata ? '_animC' : '_animT';
+  if (cascata) el.classList.remove('anim-cards');
+  else el.classList.remove('anim-dir', 'anim-esq', 'anim-fade');
+  void el.offsetWidth;
+  el.classList.add(classe);
+  clearTimeout(el[chave]);
+  // Tira a classe depois: transform parado em #main atrapalharia o que fica fixo na tela.
+  el[chave] = setTimeout(() => el.classList.remove(classe), ms || 420);
+}
+const ehCelular = () => !matchMedia('(min-width:1000px)').matches;
 
 // ---------- Acompanhar um jogo ----------
 const ICON_WATCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 10a6 6 0 1 1 12 0c0 6 2 7 2 7H4s2-1 2-7M10 20.500a2.200 2.200 0 0 0 4 0"/><path d="M20.500 4.500a7 7 0 0 1 1.500 4M3.500 4.500A7 7 0 0 0 2 8.500"/></svg>';
@@ -372,6 +441,7 @@ async function loadWatch() {
         game = d.game; stats = st;
       }
       R.watchData[id] = { game, stats, at: Date.now() };
+      registrarRelogio(game);
       if (stats) R.stats[id] = stats;
       if (game.statusGroup === 4) {
         const w = S.watch[id];
@@ -389,6 +459,11 @@ async function loadLiveStats() {
     const c = R.liveStats[g.id];
     if (c && Date.now() - c.at < 6e4) return;
     try { R.liveStats[g.id] = { stats: await api(`/game/stats/?games=${g.id}`), at: Date.now() }; } catch (_) {}
+  }));
+  await Promise.all(vivos.map(async (g) => {
+    const r = R.relogio[g.id];
+    if (r && Date.now() - r.at < 5 * 6e4) return;
+    try { registrarRelogio((await api(`/game/?gameId=${g.id}`)).game); } catch (_) {}
   }));
 }
 function linhaNumeros(g) {
@@ -438,7 +513,7 @@ function cartaoAcompanhando(id) {
   const live = g.statusGroup === 3, soon = g.statusGroup === 2;
   const rel = soon ? `${dayLabel(g.startTime)} ${hm(g.startTime)}` : g.statusGroup === 4 ? 'Fim' : liveLabel(g);
   return `<a class="acomp" href="#/jogo/${Number(id)}" style="--c1:${colorOf(h.color)};--c2:${colorOf(a.color)}">
-    <div class="acomp-top"><span>${esc(g.competitionDisplayName || '')}</span><span class="status ${live ? 'on' : ''}">${live ? '<i class="pulse" aria-hidden="true"></i>' : ''}<span class="tn">${esc(rel)}</span></span></div>
+    <div class="acomp-top"><span>${esc(g.competitionDisplayName || '')}</span><span class="status ${live ? 'on' : ''}">${live ? '<i class="pulse" aria-hidden="true"></i>' : ''}${live ? spanRelogio(id, rel) : `<span class="tn">${esc(rel)}</span>`}</span></div>
     <div class="acomp-placar"><div class="acomp-t">${crest(h, 64)}<span>${esc(h.shortName || h.name)}</span></div>
       <div class="acomp-n tn ${spoil ? 'spoil' : ''}">${soon ? 'x' : spoil ? '0 - 0' : g.sportId === 3 ? setsOf(g) : `${num(h.score)} - ${num(a.score)}`}</div>
       <div class="acomp-t">${crest(a, 64)}<span>${esc(a.shortName || a.name)}</span></div></div>
@@ -507,6 +582,7 @@ async function loadHomePrincipal() {
   // A lista "current" e a mais fresca: entra por ultimo para sobrescrever fixtures.
   const games = dedupeGames([res[1] && res[1].games, res[0] && res[0].games, res[2] && res[2].games].filter(Boolean)
     .concat(ids.length ? [] : res.map((r) => r.games)));
+  conferirRelogios(games);
   res.forEach((r) => {
     remember(r.competitors);
     (r.competitions || []).forEach((c) => { R.compRank[c.id] = c.popularityRank || 0; });
@@ -529,7 +605,7 @@ function f1Card(ev) {
   const nx = nextF1Session(ev);
   const top = nx
     ? (nx.status.type.state === 'in' ? `<span class="status on"><i class="pulse" aria-hidden="true"></i>${esc(F1_NAMES[nx.type.abbreviation] || nx.type.abbreviation)} ao vivo</span>`
-      : `<span>${esc(F1_NAMES[nx.type.abbreviation] || nx.type.abbreviation)} · ${esc(dayLabel(nx.date))} ${hm(nx.date)} · em ${inTime(new Date(nx.date) - Date.now())}</span>`)
+      : `<span>${esc(F1_NAMES[nx.type.abbreviation] || nx.type.abbreviation)} · ${esc(dayLabel(nx.date))} ${hm(nx.date)} · ${spanAte(nx.date, 'em ' + inTime(new Date(nx.date) - Date.now()))}</span>`)
     : '<span>Fim de semana encerrado</span>';
   const track = sessions.map((s) => {
     const st = s.status.type.state;
@@ -884,7 +960,7 @@ function f1Weekend_(list) {
     competitions: cur.map((s) => {
       const a = new Date(s.date_start).getTime(), z = new Date(s.date_end).getTime();
       return {
-        id: String(s.session_key), date: s.date_start, gmt: s.gmt_offset,
+        id: String(s.session_key), date: s.date_start, end: s.date_end, gmt: s.gmt_offset,
         type: { abbreviation: F1_ABBR[s.session_name] || s.session_name },
         status: { type: { state: now < a ? 'pre' : now <= z ? 'in' : 'post' } }
       };
@@ -962,7 +1038,7 @@ function f1Weekend(ev) {
   const rows = sessions.map((s) => {
     const ab = s.type.abbreviation, st = s.status.type.state;
     const when = `${dayLabel(s.date)} ${hm(s.date)}`;
-    const tag = st === 'in' ? '<span class="status on"><i class="pulse" aria-hidden="true"></i>ao vivo</span>' : st === 'post' ? 'encerrado · ver resultado' : `em ${inTime(new Date(s.date) - Date.now())}`;
+    const tag = st === 'in' ? `<span class="status on"><i class="pulse" aria-hidden="true"></i>ao vivo${s.end ? ` · ${spanAte(s.end, '', 'previsão: faltam ')}` : ''}</span>` : st === 'post' ? 'encerrado · ver resultado' : spanAte(s.date, 'em ' + inTime(new Date(s.date) - Date.now()));
     const inner = `<b>${esc(F1_NAMES[ab] || ab)}</b><span class="t tn">${esc(when)}</span><small>${tag}</small><small class="r tn">${esc(trackTime(s))}</small>`;
     const cls = `sess ${F1_MAJOR[ab] ? 'major' : ''} ${sel && sel.id === s.id ? 'sel' : ''}`;
     return st === 'post' ? `<button class="${cls}" style="width:100%;text-align:left" data-act="f1sess" data-v="${esc(s.id)}" aria-pressed="${!!sel && sel.id === s.id}">${inner}</button>`
@@ -1021,6 +1097,7 @@ async function loadGameReserva(id) {
   if (!base) throw new Error('jogo fora das reservas');
   const r = await Fontes.detalhe(base);
   R.game[id] = { game: r.game };
+  registrarRelogio(r.game);
   if (r.stats) R.stats[id] = r.stats;
   R.fonte = base._fonte || R.fonte;
   R.lastOk = Date.now(); R.failed = false;
@@ -1034,6 +1111,7 @@ function loadGame(id) {
 async function loadGamePrincipal(id) {
   const d = await api(`/game/?gameId=${id}`);
   R.game[id] = d;
+  registrarRelogio(d.game);
   R.lastOk = Date.now(); R.failed = false;
   const tab = R.gameTab[id];
   // Numeros oficiais sempre: o selo de xG usa o oficial, mais confiavel que a soma das finalizacoes.
@@ -1053,10 +1131,10 @@ function renderGame(id) {
   const live = g.statusGroup === 3, done = g.statusGroup === 4, soon = g.statusGroup === 2;
   const spoil = hidden(g);
   const center = soon
-    ? `<div class="big tn" style="font-size:30px;padding-top:8px">${hm(g.startTime)}</div><small>${esc(dayLabel(g.startTime))}${new Date(g.startTime) > Date.now() ? ' · em ' + inTime(new Date(g.startTime) - Date.now()) : ''}</small>`
+    ? `<div class="big tn" style="font-size:30px;padding-top:8px">${hm(g.startTime)}</div><small>${esc(dayLabel(g.startTime))}${new Date(g.startTime) > Date.now() ? ` · ${spanAte(g.startTime, 'em ' + inTime(new Date(g.startTime) - Date.now()))}` : ''}</small>`
     : spoil ? `<button class="btn" style="min-height:44px;margin-top:6px;font-size:14px" data-act="reveal" data-id="${g.id}">Mostrar placar</button>`
     : tennis ? tennisCenter(g, live)
-    : `<div class="big tn">${num(h.score)} - ${num(a.score)}</div><small class="${live ? 'on' : ''}">${esc(live ? liveLabel(g) : g.statusText)}</small>${(g.stages || []).filter((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`) && x.homeCompetitorScore >= 0).map((x) => `<small class="tn">Pênaltis ${num(x.homeCompetitorScore)} - ${num(x.awayCompetitorScore)}</small>`).join('')}`;
+    : `<div class="big tn">${num(h.score)} - ${num(a.score)}</div><small class="${live ? 'on relogio-grande' : ''}">${live ? spanRelogio(g.id, liveLabel(g)) : esc(g.statusText)}</small>${(g.stages || []).filter((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`) && x.homeCompetitorScore >= 0).map((x) => `<small class="tn">Pênaltis ${num(x.homeCompetitorScore)} - ${num(x.awayCompetitorScore)}</small>`).join('')}`;
   const penStage = (g.stages || []).find((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`));
   const scorers = (cid) => (g.events || []).filter((e) => e.eventType.id === 1 && e.competitorId === cid && !(penStage && e.stageId === penStage.id)).map((e) => `${esc(playerName(g, e.playerId))} ${esc(e.gameTimeDisplay || '')}`).join('<br>');
   const teamLink = (c) => {
@@ -1086,7 +1164,13 @@ function tennisCenter(g, live) {
   if (!cur) return `<div class="big tn">${setsOf(g)}</div><small>${esc(g.statusText)}</small>`;
   const gm = tennisGame(g);
   const pts = gm ? ` · ${esc(fmtPoint(gm.homeCompetitorScore))}-${esc(fmtPoint(gm.awayCompetitorScore))}` : '';
-  return `<div class="big tn">${num(cur.homeCompetitorScore)} - ${num(cur.awayCompetitorScore)}</div><small class="on tn">${esc(cur.name)}${pts}</small><small class="tn">Sets ${setsOf(g)}</small>`;
+  return `<div class="big tn">${num(cur.homeCompetitorScore)} - ${num(cur.awayCompetitorScore)}</div><small class="on tn">${esc(cur.name)}${pts}</small><small class="tn">Sets ${setsOf(g)}${tempoPartida(g)}</small>`;
+}
+function tempoPartida(g) {
+  const st = (g.stages || []).find((x) => x.id === 35 || x.shortName === 'Sets');
+  const n = st && parseInt(st.time, 10);
+  if (!n) return '';
+  return ` · ${n >= 60 ? `${Math.floor(n / 60)}h${String(n % 60).padStart(2, '0')}` : `${n} min`}`;
 }
 function setsOf(g) {
   const s = (g.stages || []).find((x) => x.id === 35 || x.shortName === 'Sets');
@@ -1554,6 +1638,12 @@ function setMain(html) {
   m.innerHTML = html;
   m.dataset.h = html;
   flashChanges(m);
+  tickRelogios();
+  // Conteudo chegou depois do esqueleto: entra suave, uma vez so.
+  if (R.animar && !m.querySelector('.skeleton')) {
+    animar(m, 'anim-cards', 520);
+    R.animar = null;
+  }
 }
 function flashChanges(root) {
   const games = (R.home && R.home.games) || [];
@@ -1593,11 +1683,14 @@ async function loadMainView() {
 function renderDetail() {
   const r = parseHash();
   const el = $('#detail');
+  if (el.classList.contains('saindo') && r.view !== 'jogo') return;
   if (r.view === 'jogo' && r.id) {
+    el.classList.remove('saindo');
     el.classList.add('open');
     document.body.style.overflow = matchMedia('(min-width:1000px)').matches ? '' : 'hidden';
     const html = renderGame(r.id);
     if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
+    tickRelogios();
     const me = R.scrollMe && el.querySelector('.table tr.me');
     if (me) { me.scrollIntoView({ block: 'center' }); R.scrollMe = false; }
   } else {
@@ -1610,10 +1703,29 @@ function renderDetail() {
 async function route() {
   const r = parseHash();
   R.nav++;
+  const det = $('#detail');
+  const estavaAberto = det.classList.contains('open');
+  if (r.view === 'jogo' && r.id !== R.jogoAberto) {
+    R.jogoAberto = r.id;
+    if (ehCelular()) { if (!estavaAberto) { det.classList.remove('saindo'); } }
+    else animar(det, 'anim-fade', 260);
+  }
   if (r.view !== 'jogo') {
+    R.jogoAberto = null;
+    // Fecha deslizando; no PC o painel e fixo e so troca.
+    if (estavaAberto && ehCelular()) {
+      det.classList.add('saindo');
+      setTimeout(() => { det.classList.remove('saindo'); renderDetail(); }, 200);
+    }
     const h = location.hash || '#/agora';
     const changed = h !== R.mainRoute;
+    const antes = ORDEM_TELAS[R.mainRoute.replace(/^#\//, '').split('/')[0]];
     R.mainRoute = h;
+    if (changed && R.routed) {
+      const agora = ORDEM_TELAS[r.view];
+      animar(main(), agora >= (antes == null ? 0 : antes) ? 'anim-dir' : 'anim-esq', 320);
+      R.animar = true;
+    }
     if (changed || !R.routed) {
       window.scrollTo(0, 0); main().scrollTop = 0;
       delete main().dataset.h;
@@ -1718,7 +1830,7 @@ const ACTIONS = {
     rerender();
   },
   spoiler() { S.spoiler = !S.spoiler; R.reveal.clear(); save(); syncPrefs(); toast(S.spoiler ? 'Modo sem spoiler ligado' : 'Placares visíveis'); rerender(); },
-  filter(el) { S.filter = el.dataset.v; save(); rerender(); },
+  filter(el) { S.filter = el.dataset.v; save(); R.animar = true; delete main().dataset.h; rerender(); },
   jumpday(el) { const t = document.getElementById('d-' + el.dataset.v); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
   exsport(el) {
     R.exLive = Number(el.dataset.v);
@@ -1759,12 +1871,18 @@ const ACTIONS = {
     else rerender();
   },
   f1toggle() { S.f1.on = !S.f1.on; save(); syncPrefs(); rerender(); },
-  f1tab(el) { R.f1Tab = el.dataset.v; rerender(); },
+  f1tab(el) { R.f1Tab = el.dataset.v; R.animar = true; rerender(); },
   f1sess(el) { R.f1Session = el.dataset.v; rerender(); },
   revealleague(el) { R.reveal.add('l' + el.dataset.v); rerender(); },
   revealf1(el) { R.reveal.add('f1' + el.dataset.v); rerender(); },
   reveal(el) { R.reveal.add(Number(el.dataset.id)); rerender(); },
-  gtab(el) { R.gameTab[Number(el.dataset.id)] = el.dataset.v; R.scrollMe = el.dataset.v === 'tab'; renderDetail(); poll(true); },
+  gtab(el) {
+    R.gameTab[Number(el.dataset.id)] = el.dataset.v;
+    R.scrollMe = el.dataset.v === 'tab';
+    renderDetail();
+    animar($('#detail .d-body'), 'anim-fade', 260);
+    poll(true);
+  },
   close() { location.hash = R.mainRoute; },
   back() { if (R.nav > 1) history.back(); else location.hash = '#/agora'; },
   async pushon() {
@@ -1810,7 +1928,7 @@ const ACTIONS = {
   },
   obnext() {
     const box = $('#onboarding');
-    if (OB.step < 3) { OB.step++; renderOnboarding(); box.scrollTop = 0; return; }
+    if (OB.step < 3) { OB.step++; renderOnboarding(); box.scrollTop = 0; animar($('.ob', box), 'anim-dir', 320); return; }
     S.onboarded = true; save();
     OB.step = 0; OB.force = false;
     box.hidden = true;
@@ -1872,6 +1990,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { po
 window.addEventListener('online', () => poll(true));
 setInterval(() => poll(false), POLL_MS);
 setInterval(tickFresh, 1000);
+setInterval(() => { if (!document.hidden) tickRelogios(); }, 1000);
 
 // ---------- Inicio ----------
 (function boot() {

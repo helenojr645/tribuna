@@ -70,6 +70,7 @@ window.Fontes = (function () {
     const intervalo = /^HT$/i.test(curto);
     const logo = (id) => `https://images.fotmob.com/image_resources/logo/teamlogo/${Number(id)}_small.png`;
     const hs = st.started ? Number(m.home.score) || 0 : -1, as = st.started ? Number(m.away.score) || 0 : -1;
+    const longo = String((st.liveTime && st.liveTime.long) || '').match(/^(\d+):(\d{2})/);
     const g = {
       id: 900000000 + (Number(m.id) % 90000000), _fmId: m.id, _fonte: 'FotMob', sportId: 1,
       competitionId: LIGAS_FM[liga.primaryId], competitionDisplayName: liga.name,
@@ -79,6 +80,7 @@ window.Fontes = (function () {
       gameTime: parseInt(curto, 10) || -1,
       gameTimeDisplay: grupo === 3 && !intervalo && /^\d/.test(curto) ? `${curto}'` : '',
       stages: [],
+      preciseGameTime: grupo === 3 && longo ? { minutes: Number(longo[1]), seconds: Number(longo[2]), autoProgress: !intervalo, clockDirection: 1 } : null,
       homeCompetitor: lado(m.home, hs, logo(m.home.id)), awayCompetitor: lado(m.away, as, logo(m.away.id))
     };
     if (grupo === 4 && hs !== as) { g.homeCompetitor.isWinner = hs > as; g.awayCompetitor.isWinner = as > hs; }
@@ -199,7 +201,7 @@ window.Fontes = (function () {
       }
       usados.add(k.id);
       const j = JSON.parse(JSON.stringify(k));
-      ['statusGroup', 'statusText', 'shortStatusText', 'gameTime', 'gameTimeDisplay', '_fmId', '_espnId', '_fonte', '_detalhes'].forEach((f) => { j[f] = a[f]; });
+      ['statusGroup', 'statusText', 'shortStatusText', 'gameTime', 'gameTimeDisplay', 'preciseGameTime', '_fmId', '_espnId', '_fonte', '_detalhes'].forEach((f) => { j[f] = a[f]; });
       delete j._congelado;
       j.homeCompetitor.score = a.homeCompetitor.score; j.homeCompetitor.isWinner = a.homeCompetitor.isWinner;
       j.awayCompetitor.score = a.awayCompetitor.score; j.awayCompetitor.isWinner = a.awayCompetitor.isWinner;

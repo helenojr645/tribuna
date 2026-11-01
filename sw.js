@@ -1,6 +1,6 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
-const VERSION = 'tribuna-3';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
+const VERSION = 'tribuna-5';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'fontes.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
 const IMG_CACHE = 'tribuna-img';
 
 self.addEventListener('install', (e) => {
@@ -31,7 +31,7 @@ self.addEventListener('fetch', (e) => {
     })());
     return;
   }
-  if (url.hostname === 'imagecache.365scores.com') {
+  if (url.hostname === 'imagecache.365scores.com' || url.hostname === 'images.fotmob.com' || url.hostname === 'a.espncdn.com') {
     e.respondWith((async () => {
       const cache = await caches.open(IMG_CACHE);
       const hit = await cache.match(e.request);

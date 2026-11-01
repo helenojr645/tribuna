@@ -8,7 +8,7 @@ const code = readFileSync(new URL('./dist/Code.js', import.meta.url), 'utf8');
 
 function world() {
   const store = {};
-  const w = { games: [], details: {}, f1: { sessions: [], results: [], drivers: [] }, pushes: [], pushCode: 200, failApi: false, clock: Date.parse('2026-11-04T22:00:00Z'), detailFail: false };
+  const w = { games: [], details: {}, f1: { sessions: [], results: [], drivers: [] }, fora: {}, fm: [], ev: [], ten: [], espnF1: { events: [] }, pushes: [], pushCode: 200, failApi: false, clock: Date.parse('2026-11-04T22:00:00Z'), detailFail: false };
   const props = {
     getProperty: (k) => (k in store ? store[k] : null),
     setProperty: (k, v) => { store[k] = String(v); },
@@ -40,6 +40,12 @@ function world() {
     UrlFetchApp: {
       fetch(url) {
         if (w.failApi) throw new Error('fora do ar');
+        const dono = url.includes('365scores') ? 's365' : url.includes('fotmob') ? 'fotmob' : url.includes('espn') ? 'espn' : url.includes('openf1') ? 'openf1' : '';
+        if (w.fora[dono]) throw new Error(dono + ' fora');
+        if (url.includes('fotmob')) return ok({ leagues: [{ primaryId: 268, name: 'Série A', matches: w.fm }] });
+        if (url.includes('soccer/all')) return ok({ events: w.ev });
+        if (url.includes('/tennis/')) return ok({ events: url.includes('/atp/') ? w.ten : [] });
+        if (url.includes('racing/f1')) return ok(w.espnF1);
         if (url.includes('/session_result')) return ok(w.f1.results);
         if (url.includes('/drivers')) return ok(w.f1.drivers);
         if (url.includes('/sessions')) return ok(w.f1.sessions);
@@ -293,6 +299,111 @@ t('limpeza exige PIN e aparelho morto nao gera vigia', () => {
   assert.ok(!w.store.plan && !w.store['g:7'], 'sem aparelho vivo nao le jogos');
   assert.equal(w.ctx.purge_({ pin: '123456' }).removed, 1);
   assert.ok(!w.store['dev:' + r.id]);
+});
+
+let fmSeq = 1;
+const fmJogo = (h, a, sh, sa, ini, over) => ({ id: fmSeq++, home: { name: h, score: sh }, away: { name: a, score: sa }, status: { utcTime: ini, started: true, finished: false, liveTime: { short: "50'" }, ...(over || {}) } });
+
+t('reserva: 365 cai no meio do jogo, FotMob assume sem repetir nem inventar', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 1, 0); w.games = [g];
+  w.details[7] = { events: [goal(1, 20, 9)], members: [], stages: [] };
+  w.tick(); w.next();
+  assert.deepEqual(w.tick(), [], 'sem novidade');
+  w.next(); w.fora.s365 = true;
+  w.fm = [fmJogo('CR Flamengo', 'Gremio', 1, 0, g.startTime)];
+  assert.deepEqual(w.tick(), [], 'trocar de fonte nao gera aviso');
+  assert.equal(w.store.fonte, 'FotMob');
+  assert.ok(!w.store.lastError, 'reserva funcionando nao e falha: ' + w.store.lastError);
+  w.next(); w.fm[0].home.score = 2;
+  const m = w.tick();
+  assert.deepEqual(titles(m), ['GOL do Flamengo!']);
+  assert.ok(m[0].body.includes('2 x 0'), m[0].body);
+  w.next(); w.fm[0].home.score = 1;
+  assert.deepEqual(w.tick(), [], 'reserva atrasada nao vira gol anulado');
+  w.next(); w.fm[0].status = { ...w.fm[0].status, finished: true }; w.fm[0].home.score = 2;
+  assert.deepEqual(titles(w.tick()), ['Fim de jogo']);
+});
+
+t('reserva: 365 volta e o lance atrasado nao repete o gol', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora.s365 = true; w.fm = [fmJogo('Flamengo', 'Grêmio', 1, 0, g.startTime)];
+  assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!']); w.next();
+  w.fora.s365 = false; score(g, 1, 0); w.details[7].events = [goal(1, 50, 9)];
+  assert.deepEqual(w.tick(), [], 'nao repete');
+  assert.equal(w.store.fonte || '', '', 'voltou para a principal');
+});
+
+t('reserva nunca casa jogo errado: outro adversario, feminino, reserva ou ambiguo', () => {
+  const cen = (home, away, fm, liga) => {
+    const w = world(); w.register({ follows: { c: [1], comp: [], f1: false, mute: [] } });
+    const g = foot({ statusGroup: 3, competitionDisplayName: liga || 'Liga' });
+    g.homeCompetitor.name = home; g.awayCompetitor.name = away; score(g, 0, 0); w.games = [g];
+    w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+    w.fora.s365 = true; w.fm = fm.map((x) => fmJogo(x[0], x[1], 3, 0, g.startTime));
+    return w.tick();
+  };
+  assert.deepEqual(cen('Club Deportivo Bocas', 'Cd Universitario Ii', [['Union Cocle', 'CD Universitario']]), [], 'so um time igual');
+  assert.deepEqual(cen('Corinthians (F)', 'Cruzeiro (F)', [['Corinthians', 'Cruzeiro']]), [], 'feminino x masculino');
+  assert.deepEqual(cen('Santos II', 'Bahia', [['Santos', 'Bahia']]), [], 'reserva x principal');
+  assert.deepEqual(cen('Flamengo', 'Fluminense', [['Flamengo', 'Fluminense'], ['Flamengo RJ', 'Fluminense FC']]), [], 'dois candidatos');
+  assert.equal(titles(cen('Atlético-MG', 'Cruzeiro', [['Atletico Mineiro', 'Cruzeiro']]))[0], 'GOL do Atlético-MG!', 'apelido valido casa');
+  assert.equal(titles(cen('PSG', 'Lyon', [['Paris Saint-Germain', 'Lyon']]))[0], 'GOL do PSG!', 'PSG casa');
+  assert.equal(titles(cen('Sporting CP', 'Porto', [['Sporting CP', 'FC Porto']]))[0], 'GOL do Sporting CP!', 'nome so com palavra comum casa');
+});
+
+t('reserva: mesmo jogo repetido na FotMob nao vira ambiguidade', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora.s365 = true;
+  const m = fmJogo('Flamengo', 'Grêmio', 1, 0, g.startTime);
+  w.fm = [m, { ...m }];
+  assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!']);
+});
+
+t('reserva da reserva: 365 e FotMob fora, ESPN assume', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora.s365 = true; w.fora.fotmob = true;
+  w.ev = [{ date: g.startTime, status: { type: { state: 'in', description: 'Second Half' } }, competitions: [{ competitors: [{ homeAway: 'home', score: '1', team: { displayName: 'Flamengo' } }, { homeAway: 'away', score: '0', team: { displayName: 'Gremio' } }] }] }];
+  assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!']);
+  assert.equal(w.store.fonte, 'ESPN');
+});
+
+t('todas as fontes fora: nao inventa nada e registra a falha', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora = { s365: true, fotmob: true, espn: true };
+  assert.deepEqual(w.tick(), []);
+  assert.ok(w.store.lastError, 'erro registrado');
+});
+
+t('reserva tenis: set encerrado pela ESPN', () => {
+  const w = world(); w.register();
+  const st = (a, b, sa, sb) => [{ id: 27, shortName: 'S1', homeCompetitorScore: sa, awayCompetitorScore: sb }, { id: 35, shortName: 'Sets', homeCompetitorScore: a, awayCompetitorScore: b }];
+  const g = { id: 8, sportId: 3, competitionId: 5, competitionDisplayName: 'Viena', startTime: new Date(w.clock - 36e5).toISOString(), statusGroup: 3, statusText: '1º set', stages: st(0, 0, 4, 4), homeCompetitor: { id: 100, name: 'João Fonseca', score: 0 }, awayCompetitor: { id: 200, name: 'Carlos Alcaraz', score: 0 } };
+  w.games = [g]; w.tick(); w.next();
+  w.fora.s365 = true;
+  w.ten = [{ groupings: [{ competitions: [{ date: g.startTime, status: { type: { state: 'in' } }, competitors: [{ athlete: { displayName: 'Joao Fonseca' }, linescores: [{ value: 6, winner: true }] }, { athlete: { displayName: 'Carlos Alcaraz' }, linescores: [{ value: 4, winner: false }] }] }] }] }];
+  assert.deepEqual(titles(w.tick()), ['Set encerrado: 1-0']);
+});
+
+t('F1: OpenF1 fora, ESPN assume sem repetir lembrete', () => {
+  const w = world(); w.register({ follows: { c: [], comp: [], f1: true, drivers: [], mute: [] } });
+  const a = w.clock + 25 * 60000, z = a + 2 * 36e5;
+  w.f1.sessions = [{ session_key: 5, session_name: 'Race', country_name: 'Brazil', date_start: new Date(a).toISOString(), date_end: new Date(z).toISOString() }];
+  w.tick(); w.next();
+  assert.deepEqual(titles(w.tick()), ['Corrida em 24 min']); w.next();
+  w.fora.openf1 = true;
+  const comp = (state, comps) => [{ id: '77', date: new Date(a).toISOString(), type: { abbreviation: 'Race' }, status: { type: { state } }, competitors: comps || [] }];
+  w.espnF1 = { events: [{ name: 'GP do Brasil', competitions: comp('pre') }] };
+  assert.deepEqual(w.tick(), [], 'lembrete nao repete na troca de fonte');
+  w.clock = z + 60000;
+  w.store.lastPoll = String(w.clock - 60000);
+  w.espnF1.events[0].competitions = comp('post', [{ order: 2, athlete: { displayName: 'Lewis Hamilton' } }, { order: 1, athlete: { displayName: 'Lando Norris' } }]);
+  const m = w.tick();
+  assert.equal(m.length, 1);
+  assert.ok(m[0].body.startsWith('1. Norris'), m[0].body);
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

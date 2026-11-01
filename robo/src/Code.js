@@ -4,6 +4,8 @@
 var API = 'https://webws.365scores.com/web';
 var API_Q = 'appTypeId=5&langId=31&timezoneName=America/Sao_Paulo&userCountryId=21';
 var OPENF1 = 'https://api.openf1.org/v1';
+var FOTMOB = 'https://www.fotmob.com/api/data';
+var ESPN_WEB = 'https://site.web.api.espn.com/apis/site/v2/sports';
 var SUBJECT = 'https://helenojr645.github.io/tribuna/';
 var MAX_DEVICES = 5;
 var PUSH_HOSTS = /^https:\/\/(web\.push\.apple\.com|fcm\.googleapis\.com|[a-z0-9.-]+\.push\.services\.mozilla\.com|[a-z0-9.-]+\.notify\.windows\.com)\//;
@@ -21,6 +23,7 @@ function doGet(e) {
   try {
     if (a === 'init') return json_(initOnce_());
     if (a === 'status') return json_(status_());
+    if (a === 'fontes') return json_(sondarFontes_());
     return json_({ ok: false, error: 'acao desconhecida' });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message || err) });
@@ -67,6 +70,25 @@ function initOnce_() {
   return { ok: true, pin: pin, publicKey: keys.publicKey };
 }
 
+// Diagnostico: quais fontes respondem a partir dos servidores do Google.
+function sondarFontes_() {
+  var hoje = Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyyMMdd');
+  var lista = {
+    s365: API + '/games/current/?' + API_Q + '&sports=1',
+    fotmob: 'https://www.fotmob.com/api/data/matches?date=' + hoje,
+    espnWeb: 'https://site.web.api.espn.com/apis/site/v2/sports/soccer/bra.1/scoreboard',
+    espnWebTenis: 'https://site.web.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard',
+    espnWebF1: 'https://site.web.api.espn.com/apis/site/v2/sports/racing/f1/scoreboard',
+    openf1: OPENF1 + '/sessions?year=2026&country_name=Mexico',
+    jolpica: 'https://api.jolpi.ca/ergast/f1/current/next.json'
+  };
+  var nomes = Object.keys(lista);
+  var res = UrlFetchApp.fetchAll(nomes.map(function (n) { return { url: lista[n], muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } }; }));
+  var out = {};
+  nomes.forEach(function (n, i) { out[n] = { codigo: res[i].getResponseCode(), kb: Math.round(res[i].getContentText().length / 1024) }; });
+  return { ok: true, fontes: out };
+}
+
 function status_() {
   var p = props_();
   var keys = JSON.parse(p.getProperty('vapid') || '{}');
@@ -78,6 +100,7 @@ function status_() {
     lastPush: Number(p.getProperty('lastPush') || 0),
     fails: Number(p.getProperty('fails') || 0),
     lastError: p.getProperty('lastError') || '',
+    fonte: p.getProperty('fonte') || '',
     devices: deviceIds_().length,
     now: Date.now()
   };
@@ -316,7 +339,14 @@ function tick() {
 
     var plan = JSON.parse(p.getProperty('plan') || 'null');
     if (!plan || now - plan.at > 30 * 60000) {
-      plan = buildPlan_(devices, now);
+      try {
+        plan = buildPlan_(devices, now);
+      } catch (err) {
+        // 365Scores fora na hora do plano: segue com o plano antigo e tenta de novo em 10 minutos.
+        if (!plan) throw err;
+        plan.at = now - 20 * 60000;
+        plan.live = true;
+      }
       // Salvo antes de qualquer saida: refazer o plano todo minuto estoura a cota diaria do gatilho.
       p.setProperty('plan', JSON.stringify(plan));
       cleanup_();
@@ -335,7 +365,17 @@ function tick() {
     var stale = !lastPoll || now - lastPoll > 20 * 60000;
     var out = [], writes = {}, partial = [];
     if (active) {
-      pollGames_(fetchFollowedGames_(devices), devices, mem, writes, out, now, stale, partial);
+      var lista, fonte = '';
+      try {
+        lista = fetchFollowedGames_(devices);
+      } catch (err) {
+        var alt = jogosReserva_(plan, now);
+        lista = alt.games;
+        fonte = alt.fonte;
+        console.warn('365Scores fora, usando ' + fonte + ': ' + err);
+      }
+      if (fonte !== (mem.fonte || '')) p.setProperty('fonte', fonte);
+      pollGames_(lista, devices, mem, writes, out, now, stale, partial);
     }
     if (plan.f1Active) {
       try { pollF1_(devices, mem, writes, out, now, stale); } catch (err) { partial.push('F1: ' + err); }
@@ -380,13 +420,136 @@ function fetchFollowedGames_(devices) {
   return out;
 }
 
+// ---------- Reservas ----------
+function planoJogo_(g) {
+  var lado = function (c) { return { id: c.id, name: c.name, shortName: c.shortName || '' }; };
+  return { id: g.id, sportId: g.sportId, competitionId: g.competitionId, competitionDisplayName: g.competitionDisplayName, startTime: g.startTime, statusGroup: g.statusGroup, homeCompetitor: lado(g.homeCompetitor), awayCompetitor: lado(g.awayCompetitor) };
+}
+
+var NOME_FORA = { fc: 1, cf: 1, cd: 1, club: 1, clube: 1, de: 1, del: 1, la: 1, el: 1, sc: 1, ac: 1, ca: 1, afc: 1, atletico: 1, athletico: 1, deportivo: 1, real: 1, sport: 1, sporting: 1, esporte: 1, do: 1, da: 1, cr: 1, rb: 1, united: 1, city: 1, ec: 1, se: 1 };
+var NOME_APELIDO = { mg: 'mineiro', pr: 'paranaense', go: 'goianiense', sp: 'paulista', rj: 'carioca', psg: 'germain' };
+
+function nomeTokens_(s) {
+  var todos = plain_(s).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).map(function (t) { return NOME_APELIDO[t] || t; })
+    .filter(function (t) { return t.length > 2; });
+  var fortes = todos.filter(function (t) { return !NOME_FORA[t]; });
+  // "Sporting CP" so tem palavra comum: usa o que houver.
+  return fortes.length ? fortes : todos;
+}
+
+function mesmoNome_(a, b) {
+  var y = nomeTokens_(b);
+  return nomeTokens_(a).some(function (t) { return y.indexOf(t) >= 0; });
+}
+
+// Feminino, reserva e base sao outro time, mesmo com o nome parecido.
+function categoria_(nome, liga) {
+  var t = plain_(nome + ' ' + (liga || ''));
+  var c = [];
+  if (/\(f\)|\bwomen|\bfemin|\bw\b/.test(t)) c.push('f');
+  if (/\b(ii|iii|reserve|reserves|reservas|b team)\b/.test(plain_(nome))) c.push('r');
+  var base = t.match(/\b(?:sub|u)[ -]?(\d{2})\b/);
+  if (base) c.push('u' + base[1]);
+  else if (/youth|primavera/.test(t)) c.push('base');
+  return c.join(',');
+}
+
+// Na duvida, nao casa: placar de outro jogo geraria aviso falso.
+function achaReserva_(planejado, lista) {
+  var alvo = new Date(planejado.startTime).getTime();
+  var cat = categoria_(planejado.homeCompetitor.name, planejado.competitionDisplayName);
+  var pares = lista.filter(function (a) {
+    if (Math.abs(new Date(a.t).getTime() - alvo) > 3 * 3600000) return false;
+    if (planejado.sportId !== 3 && categoria_(a.h, a.liga) !== cat) return false;
+    return mesmoNome_(planejado.homeCompetitor.name, a.h) && mesmoNome_(planejado.awayCompetitor.name, a.a);
+  });
+  return pares.length === 1 ? pares[0] : null;
+}
+
+function futebolReserva_(now) {
+  var dia = Utilities.formatDate(new Date(now), 'America/Sao_Paulo', 'yyyyMMdd');
+  try {
+    var ms = [], vistos = {};
+    (fetchJson_(FOTMOB + '/matches?date=' + dia + '&timezone=America%2FSao_Paulo&ccode3=BRA').leagues || []).forEach(function (l) {
+      (l.matches || []).forEach(function (m) {
+        // A FotMob repete o mesmo jogo em mais de uma lista.
+        if (m.id != null && vistos[m.id]) return;
+        vistos[m.id] = 1;
+        var st = m.status || {};
+        var curto = String((st.liveTime && st.liveTime.short) || '').replace(/[^0-9A-Za-z+]/g, '');
+        ms.push({ liga: l.name, h: m.home.name, a: m.away.name, sh: st.started ? Number(m.home.score) || 0 : -1, sa: st.started ? Number(m.away.score) || 0 : -1,
+          t: st.utcTime, g: st.finished || st.cancelled || st.awarded ? 4 : st.started ? 3 : 2, txt: /^HT$/i.test(curto) ? 'Intervalo' : 'Ao vivo' });
+      });
+    });
+    if (ms.length) return { lista: ms, fonte: 'FotMob' };
+  } catch (err) { console.warn('FotMob: ' + err); }
+  var ev = fetchJson_(ESPN_WEB + '/soccer/all/scoreboard').events || [];
+  return { fonte: 'ESPN', lista: ev.map(function (e) {
+    var c = e.competitions[0];
+    var h = c.competitors.filter(function (x) { return x.homeAway === 'home'; })[0], a = c.competitors.filter(function (x) { return x.homeAway === 'away'; })[0];
+    var st = e.status.type, g = st.state === 'in' ? 3 : st.state === 'post' ? 4 : 2;
+    return { h: h.team.displayName, a: a.team.displayName, sh: g === 2 ? -1 : Number(h.score) || 0, sa: g === 2 ? -1 : Number(a.score) || 0, t: e.date, g: g, txt: /half.?time/i.test(st.description || '') ? 'Intervalo' : 'Ao vivo' };
+  }) };
+}
+
+function tenisReserva_() {
+  var out = [];
+  ['atp', 'wta'].forEach(function (tour) {
+    (fetchJson_(ESPN_WEB + '/tennis/' + tour + '/scoreboard').events || []).forEach(function (ev) {
+      (ev.groupings || []).forEach(function (gr) {
+        (gr.competitions || []).forEach(function (c) {
+          if ((c.competitors || []).length !== 2) return;
+          var h = c.competitors[0], a = c.competitors[1];
+          var nome = function (p) { return (p.athlete && p.athlete.displayName) || ''; };
+          var st = c.status.type.state, g = st === 'in' ? 3 : st === 'post' ? 4 : 2;
+          var lh = h.linescores || [], la = a.linescores || [], sh = 0, sa = 0, stages = [];
+          for (var i = 0; i < Math.max(lh.length, la.length); i++) {
+            var u = lh[i] || {}, v = la[i] || {};
+            if (u.winner) sh++; else if (v.winner) sa++;
+            stages.push({ id: 27 + i, shortName: 'S' + (i + 1), homeCompetitorScore: Number(u.value) || 0, awayCompetitorScore: Number(v.value) || 0 });
+          }
+          stages.push({ id: 35, shortName: 'Sets', homeCompetitorScore: sh, awayCompetitorScore: sa });
+          out.push({ h: nome(h), a: nome(a), sh: sh, sa: sa, t: c.date, g: g, txt: 'Ao vivo', stages: stages, wh: !!h.winner, wa: !!a.winner });
+        });
+      });
+    });
+  });
+  return out;
+}
+
+// Jogos do plano com o placar lido da reserva, no mesmo formato e com os mesmos ids do 365Scores.
+function jogosReserva_(plan, now) {
+  var planejados = plan.games || [];
+  var querFutebol = planejados.some(function (g) { return g.sportId === 1; });
+  var querTenis = planejados.some(function (g) { return g.sportId === 3; });
+  var fut = querFutebol ? futebolReserva_(now) : { lista: [], fonte: '' };
+  var ten = querTenis ? tenisReserva_() : [];
+  var games = [];
+  planejados.forEach(function (pl) {
+    var a = achaReserva_(pl, pl.sportId === 3 ? ten : fut.lista);
+    if (!a) return;
+    var g = JSON.parse(JSON.stringify(pl));
+    g._alt = true;
+    g.statusGroup = a.g;
+    g.statusText = a.g === 4 ? 'Fim' : a.g === 2 ? 'Programação' : a.txt;
+    g.homeCompetitor.score = a.sh; g.awayCompetitor.score = a.sa;
+    g.homeCompetitor.isWinner = !!a.wh; g.awayCompetitor.isWinner = !!a.wa;
+    g.stages = a.stages || [];
+    games.push(g);
+  });
+  return { games: games, fonte: fut.fonte || 'ESPN' };
+}
+
 function buildPlan_(devices, now) {
-  var starts = [], live = false;
+  var starts = [], live = false, games = [];
   fetchFollowedGames_(devices).forEach(function (g) {
     if (g.statusGroup === 4) return;
     if (g.statusGroup === 3) live = true;
     var t = new Date(g.startTime).getTime();
-    if (t > now - 6 * 3600000 && t < now + 24 * 3600000) starts.push(t);
+    if (t > now - 6 * 3600000 && t < now + 24 * 3600000) {
+      starts.push(t);
+      if (games.length < 40) games.push(planoJogo_(g));
+    }
   });
   var f1Active = false;
   if (devices.some(function (d) { return d.follows.f1; })) {
@@ -402,13 +565,14 @@ function buildPlan_(devices, now) {
       f1Active = true;
     }
   }
-  return { at: now, starts: starts, live: live, f1Active: f1Active };
+  return { at: now, starts: starts, live: live, f1Active: f1Active, games: games };
 }
 
 function shortName_(c) { return c.shortName || c.name; }
 
-function scoreLine_(g) {
-  return shortName_(g.homeCompetitor) + ' ' + num_(g.homeCompetitor.score) + ' x ' + num_(g.awayCompetitor.score) + ' ' + shortName_(g.awayCompetitor);
+function scoreLine_(g, cur) {
+  var h = cur ? cur.h : num_(g.homeCompetitor.score), a = cur ? cur.a : num_(g.awayCompetitor.score);
+  return shortName_(g.homeCompetitor) + ' ' + h + ' x ' + a + ' ' + shortName_(g.awayCompetitor);
 }
 
 function num_(x) { return x == null || x < 0 ? 0 : Math.round(x); }
@@ -445,7 +609,7 @@ function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
         else if (g.sportId === 3) tennisEvents_(g, prev, cur, events, now, t);
       } else {
         cur.gh = h; cur.ga = a;
-        if (g.sportId === 1 && g.statusGroup === 3) cur.ev = detailEvents_(g).map(function (e) { return e.k; });
+        if (g.sportId === 1 && g.statusGroup === 3 && !g._alt) cur.ev = detailEvents_(g).map(function (e) { return e.k; });
       }
     } catch (err) {
       // Erro em um jogo nao derruba os outros; a memoria dele fica como estava e tenta no proximo minuto.
@@ -512,7 +676,7 @@ function footballEvents_(g, prev, cur, events, now, t) {
       cur.rem = 1;
       events.push({ rule: 'remind', title: title, body: 'Começa em ' + Math.max(1, Math.round(mins)) + ' min · ' + (g.competitionDisplayName || ''), tag: 'j' + g.id });
     }
-    if (!cur.lu && mins > 0 && mins <= 75 && Math.floor(now / 60000) % 5 === 0) {
+    if (!g._alt && !cur.lu && mins > 0 && mins <= 75 && Math.floor(now / 60000) % 5 === 0) {
       var lg = fetchJson_(API + '/game/?' + API_Q + '&gameId=' + g.id).game;
       var hl = lg.homeCompetitor.lineups, al = lg.awayCompetitor.lineups;
       if (hl && al && hl.status === 'Confirmado' && al.status === 'Confirmado') {
@@ -526,12 +690,16 @@ function footballEvents_(g, prev, cur, events, now, t) {
 
   var scoreChanged = prev && (prev.h !== cur.h || prev.a !== cur.a);
   // Gol anulado: reduz o que ja foi avisado para o proximo gol valer de novo.
+  // A reserva pode estar um lance atras do 365Scores: ali, placar menor nao significa gol anulado.
+  if (g._alt && (cur.h < cur.gh || cur.a < cur.ga)) {
+    cur.h = Math.max(cur.h, cur.gh); cur.a = Math.max(cur.a, cur.ga);
+  }
   if (cur.h < cur.gh || cur.a < cur.ga) {
     events.push({ rule: 'goal', title: 'Gol anulado', body: scoreLine_(g), tag: 'j' + g.id + 'var' + now });
     cur.gh = Math.min(cur.gh, cur.h); cur.ga = Math.min(cur.ga, cur.a);
   }
   if (g.statusGroup === 3 || scoreChanged) {
-    var det = detailEvents_(g);
+    var det = g._alt ? [] : detailEvents_(g);
     var seen = ((prev && prev.ev) || []).slice();
     det.forEach(function (e) {
       if (seen.indexOf(e.k) >= 0) return;
@@ -564,7 +732,7 @@ function footballEvents_(g, prev, cur, events, now, t) {
     }
   }
   if (prev && prev.st !== cur.st && /intervalo/i.test(cur.st)) events.push({ rule: 'ht', title: 'Intervalo', body: scoreLine_(g), tag: 'j' + g.id });
-  if (prev && prev.s === 3 && g.statusGroup === 4) events.push({ rule: 'end', title: 'Fim de jogo', body: scoreLine_(g), tag: 'j' + g.id });
+  if (prev && prev.s === 3 && g.statusGroup === 4) events.push({ rule: 'end', title: 'Fim de jogo', body: scoreLine_(g, cur), tag: 'j' + g.id });
 }
 
 function tennisEvents_(g, prev, cur, events, now, t) {
@@ -594,13 +762,47 @@ var F1_GP = {
 };
 
 // Janela curta para a resposta caber na vigia; a ESPN bloqueia os servidores do Google (403).
+var F1_ESPN = { FP1: 'Practice 1', FP2: 'Practice 2', FP3: 'Practice 3', Qual: 'Qualifying', Race: 'Race', Sprint: 'Sprint', SR: 'Sprint', SQ: 'Sprint Qualifying', SS: 'Sprint Qualifying' };
+
 function f1Sessions_(now) {
   var fmt = function (ms) { return new Date(ms).toISOString().slice(0, 19); };
-  return fetchJson_(OPENF1 + '/sessions?date_start%3E=' + fmt(now - 12 * 3600000) + '&date_start%3C=' + fmt(now + 2 * 3600000))
-    .filter(function (x) { return !x.is_cancelled; });
+  try {
+    return fetchJson_(OPENF1 + '/sessions?date_start%3E=' + fmt(now - 12 * 3600000) + '&date_start%3C=' + fmt(now + 2 * 3600000))
+      .filter(function (x) { return !x.is_cancelled; });
+  } catch (err) {
+    console.warn('OpenF1 fora, usando ESPN: ' + err);
+    var ev = (fetchJson_(ESPN_WEB + '/racing/f1/scoreboard').events || [])[0];
+    if (!ev) return [];
+    return ev.competitions.map(function (c) {
+      var a = new Date(c.date).getTime();
+      return { session_key: 'e' + c.id, session_name: F1_ESPN[c.type.abbreviation] || c.type.abbreviation, date_start: c.date, date_end: new Date(a + 2 * 3600000).toISOString(), gp_name: ev.name, _espn: c };
+    }).filter(function (x) { var a = new Date(x.date_start).getTime(); return a > now - 12 * 3600000 && a < now + 2 * 3600000; });
+  }
+}
+
+// Resultado: OpenF1, depois ESPN. Lista vazia significa que ainda nao saiu.
+function f1Top_(x) {
+  try {
+    if (x._espn) throw new Error('sessao da reserva');
+    var res = fetchJson_(OPENF1 + '/session_result?session_key=' + x.session_key).filter(function (r) { return r.position != null; })
+      .sort(function (u, v) { return u.position - v.position; });
+    if (!res.length) return [];
+    var drv = {};
+    fetchJson_(OPENF1 + '/drivers?session_key=' + x.session_key).forEach(function (d) { drv[d.driver_number] = d; });
+    return res.map(function (r) { var d = drv[r.driver_number] || {}; return { pos: r.position, last: d.last_name || ('Carro ' + r.driver_number), full: ((d.first_name || '') + ' ' + (d.last_name || '')).trim() }; });
+  } catch (err) {
+    var alvo = new Date(x.date_start).getTime();
+    var ev = (fetchJson_(ESPN_WEB + '/racing/f1/scoreboard').events || [])[0];
+    var c = x._espn || (ev && ev.competitions.filter(function (s) { return Math.abs(new Date(s.date).getTime() - alvo) < 3600000; })[0]);
+    return ((c && c.competitors) || []).slice().sort(function (u, v) { return (u.order || 99) - (v.order || 99); }).map(function (p, i) {
+      var nome = String(p.athlete.displayName || '');
+      return { pos: i + 1, last: nome.split(' ').slice(-1)[0], full: nome };
+    });
+  }
 }
 
 function f1GpName_(x) {
+  if (x.gp_name) return x.gp_name;
   var gp = F1_GP[x.country_name];
   return gp ? 'GP ' + gp : 'GP: ' + x.country_name;
 }
@@ -611,7 +813,8 @@ function pollF1_(devices, mem, writes, out, now, stale) {
   f1Sessions_(now).forEach(function (x) {
     var name = F1_NAMES[x.session_name];
     if (!name) return;
-    var key = 'f:' + x.session_key;
+    // Chave pelo horario: a sessao e a mesma em qualquer fonte, sem repetir aviso na troca.
+    var key = 'f:' + new Date(x.date_start).getTime();
     var prev = mem[key] ? JSON.parse(mem[key]) : null;
     var a = new Date(x.date_start).getTime(), z = new Date(x.date_end).getTime();
     var state = now < a ? 'pre' : now <= z ? 'in' : 'post';
@@ -625,12 +828,8 @@ function pollF1_(devices, mem, writes, out, now, stale) {
     }
     if (!stale && prev && prev.st === 'pre' && state === 'in') msgs.push({ rule: 'f1Start', title: name + ' começou', body: gp });
     if (state === 'post' && !cur.done && now < z + 6 * 3600000) {
-      var res = fetchJson_(OPENF1 + '/session_result?session_key=' + x.session_key).filter(function (r) { return r.position != null; })
-        .sort(function (u, v) { return u.position - v.position; });
-      if (res.length) {
-        var drv = {};
-        fetchJson_(OPENF1 + '/drivers?session_key=' + x.session_key).forEach(function (d) { drv[d.driver_number] = d; });
-        var top = res.map(function (r) { var d = drv[r.driver_number] || {}; return { pos: r.position, last: d.last_name || ('Carro ' + r.driver_number), full: ((d.first_name || '') + ' ' + (d.last_name || '')).trim() }; });
+      var top = f1Top_(x);
+      if (top.length) {
         cur.done = 1;
         msgs.push({ rule: 'f1End', title: name + ': ' + gp, body: top.slice(0, 3).map(function (c) { return c.pos + '. ' + c.last; }).join('  '), top: top });
       }
@@ -647,7 +846,7 @@ function pollF1_(devices, mem, writes, out, now, stale) {
             if (c.pos > 3 && mine) body += '  ·  ' + c.pos + '. ' + c.last;
           });
         }
-        out.push({ dev: d, msg: { title: m.title, body: body, tag: 'f' + x.session_key, url: '#/f1' } });
+        out.push({ dev: d, msg: { title: m.title, body: body, tag: 'f' + a, url: '#/f1' } });
       });
     });
   });

@@ -80,7 +80,7 @@ S.rules = { ...DEFAULT_RULES, ...S.rules };
 
 const R = {
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
-  home: null, f1: null, f1Res: {}, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, nav: 0, f1Tab: 'fds', f1Session: null,
+  home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, nav: 0, f1Tab: 'fds', f1Session: null,
   exLive: 1, exQuery: '', known: {}
 };
 
@@ -106,7 +106,7 @@ function imgUrl(kind, id, iv, size) {
 function initials(n) { return String(n || '?').split(/\s+/).slice(0, 2).map((x) => x[0]).join('').toUpperCase(); }
 function crest(c, size) {
   const round = (c.sportId === 3 || c.type === 4) ? ' round' : '';
-  return `<img class="crest${round}" loading="lazy" decoding="async" alt="" width="24" height="24" data-mono="${esc(initials(c.name))}" src="${imgUrl('Competitors', c.id, c.imageVersion || c.iv, size)}">`;
+  return `<img class="crest${round}" loading="lazy" decoding="async" alt="" width="24" height="24" data-mono="${esc(initials(c.name))}" src="${esc(c.logo || imgUrl('Competitors', c.id, c.imageVersion || c.iv, size))}">`;
 }
 function leagueImg(l, cls) {
   return `<img class="${cls || 'crest'}" loading="lazy" alt="" width="24" height="24" data-mono="${esc(initials(l.name))}" src="${imgUrl('Competitions', l.id, l.imageVersion || l.iv)}">`;
@@ -206,7 +206,9 @@ function gameCard(g, opts) {
   const hWin = done && !spoil && h.isWinner, aWin = done && !spoil && a.isWinner;
   const selected = location.hash === '#/jogo/' + g.id;
   const goalNow = !spoil && R.goals[g.id] && R.goals[g.id].until > Date.now() ? R.goals[g.id].side : '';
-  const status = goalNow
+  const status = g._congelado
+    ? '<span class="status">última leitura</span>'
+    : goalNow
     ? `<span class="pill-gol">GOL ${esc(liveLabel(g))}</span>`
     : live
     ? `<span class="status on"><i class="pulse" aria-hidden="true"></i><span class="tn">${esc(liveLabel(g))}</span><span class="vh">ao vivo</span></span>`
@@ -240,8 +242,40 @@ function gameCard(g, opts) {
 }
 function fmtPoint(v) { return v === 50 ? 'AD' : num(v); }
 
+// ---------- Reservas ----------
+// A fonte principal cai: usa a reserva e so volta a tentar a principal depois de 1 minuto.
+async function comReserva(principal, reserva) {
+  if (Date.now() >= R.primaryDownUntil) {
+    try {
+      const r = await principal();
+      R.fonte = null;
+      return r;
+    } catch (e) {
+      R.primaryDownUntil = Date.now() + 6e4;
+      console.warn('365Scores fora, usando reserva', e);
+    }
+  }
+  return reserva();
+}
+async function loadHomeReserva() {
+  const conhecidos = (R.home && R.home.games) || [];
+  const querTenis = S.teams.some((t) => t.sportId === 3) || conhecidos.some((g) => g.sportId === 3);
+  const alt = await Fontes.todos(querTenis);
+  const games = Fontes.reconciliar(alt.jogos, conhecidos, S.teams);
+  detectGoals(games);
+  R.fonte = alt.fonte;
+  R.home = { games, at: Date.now() };
+  if (S.f1.on) R.f1 = await f1Current().catch(() => R.f1);
+  R.lastOk = Date.now(); R.failed = false;
+  return R.home;
+}
+function acharJogo(id) {
+  return Fontes.porId[id] || ((R.home && R.home.games) || []).find((g) => g.id === id) || null;
+}
+
 // ---------- Carregar painel ----------
-async function loadHome() {
+function loadHome() { return comReserva(loadHomePrincipal, loadHomeReserva); }
+async function loadHomePrincipal() {
   const ids = S.teams.map((t) => t.id);
   const comps = S.comps.map((c) => c.id);
   const calls = [];
@@ -252,6 +286,7 @@ async function loadHome() {
   if (comps.length) calls.push(api(`/games/current/?competitions=${comps.join(',')}`));
   const f1Call = S.f1.on ? f1Current().catch(() => R.f1) : Promise.resolve(null);
   const [res, f1] = await Promise.all([Promise.all(calls), f1Call]);
+  if (res.some((r) => !Array.isArray(r.games))) throw new Error('resposta sem jogos');
   // A lista "current" e a mais fresca: entra por ultimo para sobrescrever fixtures.
   const games = dedupeGames([res[1] && res[1].games, res[0] && res[0].games, res[2] && res[2].games].filter(Boolean)
     .concat(ids.length ? [] : res.map((r) => r.games)));
@@ -337,7 +372,7 @@ function freshText() {
   const s = Math.round((Date.now() - R.lastOk) / 1000);
   const t = s < 5 ? 'agora' : s < 60 ? `há ${s} s` : `há ${Math.round(s / 60)} min`;
   if (R.failed) return s < 60 ? 'sem conexão' : `sem conexão · dados de ${t}`;
-  return `atualizado ${t}`;
+  return R.fonte ? `reserva ${R.fonte} · ${t}` : `atualizado ${t}`;
 }
 
 function renderAgora() {
@@ -379,12 +414,23 @@ function renderAgora() {
 
 // ---------- Agenda ----------
 async function loadAgenda() {
-  const ids = S.teams.map((t) => t.id);
-  const lists = [];
-  if (ids.length) lists.push((await api(`/games/fixtures/?competitors=${ids.join(',')}`)).games);
-  if (S.comps.length) lists.push((await api(`/games/fixtures/?competitions=${S.comps.map((c) => c.id).join(',')}`)).games);
   const sessions = S.f1.on ? await loadF1Sessions().catch(() => []) : [];
-  R.agenda = { games: dedupeGames(lists).filter(gameIsMine), sessions, at: Date.now() };
+  const games = await comReserva(async () => {
+    const ids = S.teams.map((t) => t.id);
+    const lists = [];
+    if (ids.length) lists.push((await api(`/games/fixtures/?competitors=${ids.join(',')}`)).games);
+    if (S.comps.length) lists.push((await api(`/games/fixtures/?competitions=${S.comps.map((c) => c.id).join(',')}`)).games);
+    const out = dedupeGames(lists).filter(gameIsMine);
+    try { localStorage.setItem('tribuna.agenda', JSON.stringify(out.slice(0, 80))); } catch (_) {}
+    return out;
+  }, async () => {
+    // As reservas so trazem o dia; os proximos jogos vem da ultima agenda salva.
+    await loadHomeReserva().catch(() => {});
+    const salvo = safeParse(localStorage.getItem('tribuna.agenda'));
+    const antigos = Array.isArray(salvo) ? salvo : [];
+    return dedupeGames([antigos, (R.home && R.home.games) || []]).filter(gameIsMine);
+  });
+  R.agenda = { games, sessions, at: Date.now() };
   R.lastOk = Date.now(); R.failed = false;
 }
 async function loadF1Sessions() {
@@ -395,8 +441,11 @@ async function loadF1Sessions() {
     localStorage.setItem('tribuna.f1s', JSON.stringify({ at: Date.now(), list }));
     return list;
   } catch (e) {
+    // Calendario salvo vale mais que a reserva: tem o ano inteiro.
     if (c.list && c.list.length) return c.list;
-    throw e;
+    const alt = await Fontes.f1Sessoes();
+    R.f1Fonte = 'ESPN';
+    return alt;
   }
 }
 function renderAgenda() {
@@ -468,18 +517,22 @@ async function loadExLive() {
   const el = $('#ex-live');
   if (!el) return;
   const sport = R.exLive;
-  const d = await api(`/games/current/?sports=${sport}`);
+  const d = await comReserva(() => api(`/games/current/?sports=${sport}`), async () => {
+    const alt = await Fontes.todos(sport === 3);
+    R.fonte = alt.fonte;
+    return { games: alt.jogos.filter((g) => g.sportId === sport), competitions: [], competitors: [] };
+  });
   R.lastOk = Date.now(); R.failed = false;
   if (R.exLive !== sport || !$('#ex-live')) return;
   remember(d.competitors);
   const compOf = {}; (d.competitions || []).forEach((c) => { compOf[c.id] = c; });
   const live = d.games.filter((g) => g.statusGroup === 3);
   const groups = {};
-  live.forEach((g) => { (groups[g.competitionId] = groups[g.competitionId] || []).push(g); });
+  live.forEach((g) => { const k = g.competitionId || g.competitionDisplayName; (groups[k] = groups[k] || []).push(g); });
   const order = Object.keys(groups).sort((a, b) => ((compOf[b] && compOf[b].popularityRank) || 0) - ((compOf[a] && compOf[a].popularityRank) || 0));
   const html = order.slice(0, 15).map((id) => {
-    const c = compOf[id] || { id, name: '' };
-    return `<div class="sec"><h2><a href="#/liga/${Number(id)}" style="color:inherit;font:inherit">${esc(c.name)}</a></h2></div><div class="stack">${groups[id].map((g) => gameCard(g)).join('')}</div>`;
+    const c = compOf[id] || { id, name: groups[id][0].competitionDisplayName || id };
+    return `<div class="sec"><h2>${Number(id) ? `<a href="#/liga/${Number(id)}" style="color:inherit;font:inherit">${esc(c.name)}</a>` : esc(c.name)}</h2></div><div class="stack">${groups[id].map((g) => gameCard(g)).join('')}</div>`;
   }).join('') || '<div class="empty"><b>Nada ao vivo agora</b>Os jogos em andamento aparecem aqui.</div>';
   if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
 }
@@ -501,15 +554,21 @@ function onSearch(value, target, sportFilter, render) {
         <div class="item">${crest(c)}<a class="grow" href="#/time/${Number(c.id)}"><div class="t1">${esc(c.name)}</div><div class="t2">${c.sportId === 3 ? 'Tênis' : 'Futebol'}</div></a>
         <button class="follow ${isTeam(c.id) ? 'on' : ''}" data-act="follow" data-id="${Number(c.id)}" aria-pressed="${isTeam(c.id)}">${isTeam(c.id) ? 'Seguindo' : 'Seguir'}</button></div>`).join('')}</div><div style="height:10px"></div>`
         : '<div class="empty">Nada encontrado.</div>';
-    } catch (_) { target.innerHTML = '<div class="banner">A busca não respondeu. Tente de novo.</div>'; }
+    } catch (_) { target.innerHTML = '<div class="banner">A busca depende do 365Scores, que não respondeu. Os placares seguem pelas reservas; tente buscar de novo em instantes.</div>'; }
   }, 280);
 }
 
 // ---------- Time ----------
 async function loadTeam(id) {
-  const [fx, rs] = await Promise.all([api(`/games/fixtures/?competitors=${id}`), api(`/games/results/?competitors=${id}`)]);
-  remember(fx.competitors); remember(rs.competitors);
-  R.team = { id, fixtures: fx.games || [], results: (rs.games || []).slice().sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
+  await comReserva(async () => {
+    const [fx, rs] = await Promise.all([api(`/games/fixtures/?competitors=${id}`), api(`/games/results/?competitors=${id}`)]);
+    remember(fx.competitors); remember(rs.competitors);
+    R.team = { id, fixtures: fx.games || [], results: (rs.games || []).slice().sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
+  }, async () => {
+    await loadHomeReserva();
+    const meus = R.home.games.filter((g) => g.homeCompetitor.id === id || g.awayCompetitor.id === id);
+    R.team = { id, fixtures: meus.filter((g) => g.statusGroup !== 4), results: meus.filter((g) => g.statusGroup === 4).sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
+  });
   R.lastOk = Date.now(); R.failed = false;
 }
 function backBtn() { return `<button class="icon-btn" data-act="back" aria-label="Voltar">${ICONS.back}</button>`; }
@@ -530,8 +589,14 @@ function renderTeam(id) {
 
 // ---------- Campeonato ----------
 async function loadStandings(id) {
-  const d = await api(`/standings/?competitions=${id}`);
-  (d.standings || []).forEach((s) => (s.rows || []).forEach((r) => remember([r.competitor])));
+  let d;
+  try {
+    d = await api(`/standings/?competitions=${id}`);
+    (d.standings || []).forEach((s) => (s.rows || []).forEach((r) => remember([r.competitor])));
+  } catch (e) {
+    // Reserva ESPN; sem ela, fica a ultima tabela lida.
+    d = await Fontes.tabela(id).catch(() => { if (R.standings[id]) return R.standings[id]; throw e; });
+  }
   R.standings[id] = d;
   return d;
 }
@@ -546,15 +611,18 @@ function standingsTable(d, highlight) {
       const c = r.competitor;
       const sg = r.ratio != null ? r.ratio : (r.for || 0) - (r.against || 0);
       return `<tr class="${highlight && highlight.includes(c.id) ? 'me' : ''}"><td class="pos tn">${r.position || ''}</td>
-        <td class="tm"><a href="#/time/${Number(c.id)}">${crest(c)}<em>${esc(c.shortName || c.name)}</em></a></td>
+        <td class="tm">${c.id ? `<a href="#/time/${Number(c.id)}">${crest(c)}<em>${esc(c.shortName || c.name)}</em></a>` : `<span>${crest(c)}<em>${esc(c.shortName || c.name)}</em></span>`}</td>
         <td class="b tn">${num(r.points)}</td><td class="tn">${num(r.gamePlayed)}</td><td class="tn">${num(r.gamesWon)}</td><td class="tn">${num(r.gamesEven)}</td><td class="tn">${num(r.gamesLost)}</td><td class="tn">${sg > 0 ? '+' : ''}${Math.round(sg)}</td></tr>`;
     }).join('');
     return `${k !== '0' && names[k] ? `<div class="subhead">${esc(names[k])}</div>` : ''}<table class="table"><thead><tr><th><span class="vh">Posição</span></th><th>Time</th><th>P</th><th>J</th><th>V</th><th>E</th><th>D</th><th>SG</th></tr></thead><tbody>${rows}</tbody></table>`;
   }).join('');
 }
 async function loadLeague(id) {
-  const [st, gm] = await Promise.all([loadStandings(id).catch(() => null), api(`/games/current/?competitions=${id}`)]);
-  const fx = await api(`/games/fixtures/?competitions=${id}`).catch(() => ({ games: [] }));
+  const [st, gm] = await Promise.all([loadStandings(id).catch(() => null), comReserva(() => api(`/games/current/?competitions=${id}`), async () => {
+    await loadHomeReserva();
+    return { games: R.home.games.filter((g) => g.competitionId === id), competitions: [] };
+  })]);
+  const fx = Date.now() < R.primaryDownUntil ? { games: [] } : await api(`/games/fixtures/?competitions=${id}`).catch(() => ({ games: [] }));
   const comp = (gm.competitions || []).find((c) => c.id === id) || (st && st.competitions || []).find((c) => c.id === id) || LEAGUES.find((l) => l.id === id) || { id, name: '' };
   R.league = { id, comp, st, games: dedupeGames([fx.games, gm.games]) };
   R.lastOk = Date.now(); R.failed = false;
@@ -589,7 +657,7 @@ function f1Weekend_(list) {
   if (!cur) return null;
   const gp = F1_GP[cur[0].country_name];
   return {
-    name: gp ? `GP ${gp}` : `GP: ${cur[0].country_name}`,
+    name: cur[0].gp_name || (gp ? `GP ${gp}` : `GP: ${cur[0].country_name}`),
     circuit: cur[0].circuit_short_name,
     competitions: cur.map((s) => {
       const a = new Date(s.date_start).getTime(), z = new Date(s.date_end).getTime();
@@ -606,13 +674,21 @@ async function f1Current() {
   return { events: ev ? [ev] : [] };
 }
 // Resultado de cada sessao: fica guardado quando ja saiu.
-async function loadF1Result(key) {
+async function loadF1Result(key, data) {
   const c = R.f1Res[key];
   if (c && c.list.length && Date.now() - c.at < 30 * 6e4) return;
-  const [res, drv] = await Promise.all([
-    getJson(`${OPENF1}/session_result?session_key=${key}`),
-    getJson(`${OPENF1}/drivers?session_key=${key}`)
-  ]);
+  let res, drv;
+  try {
+    if (String(key).startsWith('e')) throw new Error('sessao veio da reserva');
+    [res, drv] = await Promise.all([
+      getJson(`${OPENF1}/session_result?session_key=${key}`),
+      getJson(`${OPENF1}/drivers?session_key=${key}`)
+    ]);
+  } catch (e) {
+    const list = await Fontes.f1Resultado(data);
+    R.f1Res[key] = { at: Date.now(), list, fonte: 'ESPN' };
+    return;
+  }
   const byNum = {};
   drv.forEach((d) => { byNum[d.driver_number] = d; });
   R.f1Res[key] = {
@@ -631,16 +707,8 @@ async function loadF1Page() {
   R.f1 = cur;
   const ev = cur.events[0];
   const sel = ev && f1SelectedSession(ev);
-  if (sel) await loadF1Result(sel.id).catch(() => { R.f1Res[sel.id] = R.f1Res[sel.id] || { at: 0, list: [], failed: true }; });
-  const c = safeParse(localStorage.getItem('tribuna.f1st'));
-  if (c.at && Date.now() - c.at < 36e5 && c.drivers) R.f1Static = c;
-  else {
-    const [dr, co] = await Promise.all([getJson(`${JOLPICA}/current/driverStandings.json`), getJson(`${JOLPICA}/current/constructorStandings.json`)]);
-    const drivers = dr.MRData.StandingsTable.StandingsLists[0].DriverStandings;
-    const cons = co.MRData.StandingsTable.StandingsLists[0].ConstructorStandings;
-    R.f1Static = { at: Date.now(), drivers, cons, round: dr.MRData.StandingsTable.StandingsLists[0].round };
-    localStorage.setItem('tribuna.f1st', JSON.stringify(R.f1Static));
-  }
+  if (sel) await loadF1Result(sel.id, sel.date).catch(() => { R.f1Res[sel.id] = R.f1Res[sel.id] || { at: 0, list: [], failed: true }; });
+  await loadF1Static(true);
   R.f1Sessions = sessions;
   R.lastOk = Date.now(); R.failed = false;
 }
@@ -714,7 +782,7 @@ function f1Drivers() {
       <b class="tn">${esc(d.points)}</b>
       <button class="icon-btn ${on ? 'on' : ''}" data-act="driver" data-v="${esc(fam)}" aria-pressed="${on}" aria-label="Seguir ${esc(fam)}">${on ? ICONS.starOn : ICONS.star}</button></div>`;
   }).join('');
-  return `<div class="list">${rows}</div><p class="muted" style="font-size:13px;margin-top:8px">Após a etapa ${esc(R.f1Static.round)}. A estrela destaca o piloto nos resultados e nos avisos.</p>`;
+  return `<div class="list">${rows}</div><p class="muted" style="font-size:13px;margin-top:8px">${R.f1Static.round ? `Após a etapa ${esc(R.f1Static.round)}. ` : ''}A estrela destaca o piloto nos resultados e nos avisos.</p>`;
 }
 function f1Teams() {
   if (!R.f1Static) return '<div class="skeleton"></div>';
@@ -722,7 +790,26 @@ function f1Teams() {
 }
 
 // ---------- Detalhe do jogo ----------
-async function loadGame(id) {
+async function loadGameReserva(id) {
+  let base = acharJogo(id);
+  if (!base || (!base._fmId && !base._espnId)) {
+    await loadHomeReserva();
+    base = acharJogo(id);
+  }
+  if (!base) throw new Error('jogo fora das reservas');
+  const r = await Fontes.detalhe(base);
+  R.game[id] = { game: r.game };
+  if (r.stats) R.stats[id] = r.stats;
+  R.fonte = base._fonte || R.fonte;
+  R.lastOk = Date.now(); R.failed = false;
+  if (R.gameTab[id] === 'tab' && !R.standings[base.competitionId]) await loadStandings(base.competitionId).catch(() => {});
+}
+function loadGame(id) {
+  // Jogo que so existe na reserva nao tem pagina no 365Scores.
+  if (id >= 7e8) return loadGameReserva(id);
+  return comReserva(() => loadGamePrincipal(id), () => loadGameReserva(id));
+}
+async function loadGamePrincipal(id) {
   const d = await api(`/game/?gameId=${id}`);
   R.game[id] = d;
   R.lastOk = Date.now(); R.failed = false;
@@ -750,7 +837,10 @@ function renderGame(id) {
     : `<div class="big tn">${num(h.score)} - ${num(a.score)}</div><small class="${live ? 'on' : ''}">${esc(live ? liveLabel(g) : g.statusText)}</small>${(g.stages || []).filter((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`) && x.homeCompetitorScore >= 0).map((x) => `<small class="tn">Pênaltis ${num(x.homeCompetitorScore)} - ${num(x.awayCompetitorScore)}</small>`).join('')}`;
   const penStage = (g.stages || []).find((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`));
   const scorers = (cid) => (g.events || []).filter((e) => e.eventType.id === 1 && e.competitorId === cid && !(penStage && e.stageId === penStage.id)).map((e) => `${esc(playerName(g, e.playerId))} ${esc(e.gameTimeDisplay || '')}`).join('<br>');
-  const teamLink = (c) => `<a class="d-team" href="#/time/${Number(c.id)}"><img class="${tennis ? 'round' : ''}" alt="" width="56" height="56" data-mono="${esc(initials(c.name))}" src="${imgUrl('Competitors', c.id, c.imageVersion, 96)}"><span>${esc(c.shortName || c.name)}${c.rankings && c.rankings[0] ? `<br><small class="muted tn" style="font-weight:500">${esc(c.rankings[0].name)} ${c.rankings[0].position}</small>` : ''}</span></a>`;
+  const teamLink = (c) => {
+    const tag = c.id ? `a class="d-team" href="#/time/${Number(c.id)}"` : 'div class="d-team"';
+    return `<${tag}><img class="${tennis ? 'round' : ''}" alt="" width="56" height="56" data-mono="${esc(initials(c.name))}" src="${esc(c.logo || imgUrl('Competitors', c.id, c.imageVersion, 96))}"><span>${esc(c.shortName || c.name)}${c.rankings && c.rankings[0] ? `<br><small class="muted tn" style="font-weight:500">${esc(c.rankings[0].name)} ${c.rankings[0].position}</small>` : ''}</span></${c.id ? 'a' : 'div'}>`;
+  };
   const tabsDef = tennis ? [['jogo', 'Jogo']] : [['jogo', 'Jogo'], ['num', 'Números'], ['esc', 'Escalações'], ...(g.hasStandings ? [['tab', 'Tabela']] : [])];
   const cur = R.gameTab[id] || 'jogo';
   const tabs = tabsDef.length > 1 ? `<div class="tabs" role="tablist">${tabsDef.map(([k, t]) => `<button class="tab" role="tab" data-act="gtab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div>` : '';
@@ -792,6 +882,7 @@ function infoBlock(g) {
   parts.push(`<div class="info"><span>Início</span><span class="tn" style="width:auto;color:var(--ink);font-size:15px">${esc(dayLabel(g.startTime))}, ${hm(g.startTime)}</span></div>`);
   if (g.venue && g.venue.name) parts.push(`<div class="info"><span>Local</span><span style="width:auto;color:var(--ink);font-size:15px">${esc(g.venue.name)}</span></div>`);
   if (ref && ref.name) parts.push(`<div class="info"><span>Árbitro</span><span style="width:auto;color:var(--ink);font-size:15px">${esc(ref.name)}</span></div>`);
+  if (g._fonte) parts.push(`<div class="info"><span>Fonte</span><span style="width:auto;color:var(--ink);font-size:15px">${esc(g._fonte)} (reserva)</span></div>`);
   return `<div class="panel" style="padding:4px 14px">${parts.join('')}</div>`;
 }
 function pulseChart(g) {
@@ -1065,7 +1156,7 @@ async function loadRoboStatus() {
     const st = await getJson(`${ROBO}?a=status`, 25000);
     const age = (st.now - st.lastTick) / 6e4;
     const ok = st.lastTick && age < 6 && !(st.fails >= 5);
-    const last = st.lastPoll ? `leu placares às ${hm(st.lastPoll)}` : 'ainda sem jogo para vigiar';
+    const last = (st.lastPoll ? `leu placares às ${hm(st.lastPoll)}` : 'ainda sem jogo para vigiar') + (st.fonte ? `, pela reserva ${st.fonte}` : '');
     el.className = 'state ' + (ok ? 'ok' : 'bad');
     el.innerHTML = `<i aria-hidden="true"></i><span>${ok ? `Robô em dia: ${esc(last)}` : `Robô parado ou com erro (${esc(st.lastError || 'sem sinal há ' + Math.round(age) + ' min')})`}</span>`;
   } catch (_) {
@@ -1113,7 +1204,7 @@ function renderAjustes() {
       <label class="sw"><span>Horário silencioso<small>Nenhum aviso neste intervalo</small></span><input type="checkbox" role="switch" data-act="quiet" ${S.quiet.on ? 'checked' : ''}></label>
       ${S.quiet.on ? `<div class="hours"><label>Das <select data-act="quietfrom" aria-label="Início">${opts(S.quiet.from)}</select></label><label>às <select data-act="quietto" aria-label="Fim">${opts(S.quiet.to)}</select></label></div>` : ''}
     </div>
-    <p class="muted" style="font-size:13px;margin:18px 2px 0">Dados: 365Scores (futebol e tênis), ESPN, Jolpica e OpenF1 (Fórmula 1). Não são fontes oficiais e podem atrasar ou mudar. Seus seguidos ficam neste aparelho; para os avisos, a lista também vai para o seu robô.</p>`;
+    <p class="muted" style="font-size:13px;margin:18px 2px 0">Dados: 365Scores (futebol e tênis), OpenF1 e Jolpica (Fórmula 1), com FotMob e ESPN de reserva automática. Não são fontes oficiais e podem atrasar ou mudar. Seus seguidos ficam neste aparelho; para os avisos, a lista também vai para o seu robô.</p>`;
 }
 
 // ---------- Boas-vindas ----------
@@ -1186,13 +1277,21 @@ async function loadObF1() {
     if (box) box.innerHTML = '<p class="muted" style="font-size:14px;margin-top:12px">Não consegui carregar a lista de pilotos agora. Dá para escolher depois na tela de F1.</p>';
   }
 }
-async function loadF1Static() {
-  if (R.f1Static) return;
+async function loadF1Static(renovar) {
+  if (R.f1Static && !renovar) return;
   const c = safeParse(localStorage.getItem('tribuna.f1st'));
   if (c.at && Date.now() - c.at < 36e5 && c.drivers) { R.f1Static = c; return; }
-  const [dr, co] = await Promise.all([getJson(`${JOLPICA}/current/driverStandings.json`), getJson(`${JOLPICA}/current/constructorStandings.json`)]);
-  const l = dr.MRData.StandingsTable.StandingsLists[0];
-  R.f1Static = { at: Date.now(), drivers: l.DriverStandings, cons: co.MRData.StandingsTable.StandingsLists[0].ConstructorStandings, round: l.round };
+  try {
+    const [dr, co] = await Promise.all([getJson(`${JOLPICA}/current/driverStandings.json`), getJson(`${JOLPICA}/current/constructorStandings.json`)]);
+    const l = dr.MRData.StandingsTable.StandingsLists[0];
+    R.f1Static = { at: Date.now(), drivers: l.DriverStandings, cons: co.MRData.StandingsTable.StandingsLists[0].ConstructorStandings, round: l.round };
+  } catch (e) {
+    // Reserva ESPN; sem ela, fica o ultimo campeonato salvo, mesmo antigo.
+    try { R.f1Static = await Fontes.f1Classificacao(); } catch (_) {
+      if (c.drivers) { R.f1Static = c; return; }
+      throw e;
+    }
+  }
   localStorage.setItem('tribuna.f1st', JSON.stringify(R.f1Static));
 }
 

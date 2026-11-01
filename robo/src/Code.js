@@ -3,7 +3,7 @@
 
 var API = 'https://webws.365scores.com/web';
 var API_Q = 'appTypeId=5&langId=31&timezoneName=America/Sao_Paulo&userCountryId=21';
-var ESPN_F1 = 'https://site.api.espn.com/apis/site/v2/sports/racing/f1/scoreboard';
+var OPENF1 = 'https://api.openf1.org/v1';
 var SUBJECT = 'https://helenojr645.github.io/tribuna/';
 var MAX_DEVICES = 5;
 var PUSH_HOSTS = /^https:\/\/(web\.push\.apple\.com|fcm\.googleapis\.com|[a-z0-9.-]+\.push\.services\.mozilla\.com|[a-z0-9.-]+\.notify\.windows\.com)\//;
@@ -207,7 +207,7 @@ function pushMany_(items) {
       reqs.push({
         url: ep, method: 'post', contentType: 'application/octet-stream',
         headers: { Authorization: auths[origin], TTL: '1800', Urgency: 'high', 'Content-Encoding': 'aes128gcm' },
-        payload: toSigned_(body), muteHttpExceptions: true
+        payload: Utilities.newBlob(toSigned_(body), 'application/octet-stream'), muteHttpExceptions: true
       });
       ready.push(it);
     } catch (err) {
@@ -372,10 +372,10 @@ function buildPlan_(devices, now) {
   var f1Active = false;
   if (devices.some(function (d) { return d.follows.f1; })) {
     try {
-      var ev = (fetchJson_(ESPN_F1).events || [])[0];
-      if (ev) ev.competitions.forEach(function (s) {
-        var t = new Date(s.date).getTime();
-        if (s.status.type.state === 'in' || (now > t - 3600000 && now < t + 5 * 3600000)) f1Active = true;
+      f1Active = f1Sessions_(now).some(function (x) {
+        var a = new Date(x.date_start).getTime(), z = new Date(x.date_end).getTime();
+        // Inclui as horas depois do fim: o resultado pode demorar a sair.
+        return now > a - 3600000 && now < z + 6 * 3600000;
       });
     } catch (err) {
       // F1 fora do ar nao pode parar a vigia de futebol e tenis.
@@ -565,48 +565,70 @@ function tennisEvents_(g, prev, cur, events, now, t) {
   }
 }
 
-var F1_NAMES = { FP1: 'Treino 1', FP2: 'Treino 2', FP3: 'Treino 3', Qual: 'Classificação', Race: 'Corrida', SS: 'Classificação Sprint', SQ: 'Classificação Sprint', Sprint: 'Sprint', SR: 'Sprint' };
-var F1_MAJOR = { Qual: 1, Race: 1, Sprint: 1, SR: 1, SQ: 1, SS: 1 };
+var F1_NAMES = { 'Qualifying': 'Classificação', 'Race': 'Corrida', 'Sprint': 'Sprint', 'Sprint Qualifying': 'Classificação Sprint', 'Sprint Shootout': 'Classificação Sprint' };
+var F1_GP = {
+  Australia: 'da Austrália', China: 'da China', Japan: 'do Japão', Bahrain: 'do Bahrein', 'Saudi Arabia': 'da Arábia Saudita',
+  'United States': 'dos Estados Unidos', Italy: 'da Itália', Monaco: 'de Mônaco', Spain: 'da Espanha', Canada: 'do Canadá',
+  Austria: 'da Áustria', 'United Kingdom': 'da Inglaterra', Belgium: 'da Bélgica', Hungary: 'da Hungria', Netherlands: 'da Holanda',
+  Azerbaijan: 'do Azerbaijão', Singapore: 'de Singapura', Mexico: 'do México', Brazil: 'do Brasil', Qatar: 'do Catar',
+  'United Arab Emirates': 'de Abu Dhabi'
+};
+
+// Janela curta para a resposta caber na vigia; a ESPN bloqueia os servidores do Google (403).
+function f1Sessions_(now) {
+  var fmt = function (ms) { return new Date(ms).toISOString().slice(0, 19); };
+  return fetchJson_(OPENF1 + '/sessions?date_start%3E=' + fmt(now - 12 * 3600000) + '&date_start%3C=' + fmt(now + 2 * 3600000))
+    .filter(function (x) { return !x.is_cancelled; });
+}
+
+function f1GpName_(x) {
+  var gp = F1_GP[x.country_name];
+  return gp ? 'GP ' + gp : 'GP: ' + x.country_name;
+}
 
 function pollF1_(devices, mem, writes, out, now, stale) {
   var fans = devices.filter(function (d) { return d.follows.f1; });
   if (!fans.length) return;
-  var ev = (fetchJson_(ESPN_F1).events || [])[0];
-  if (!ev) return;
-  ev.competitions.forEach(function (s) {
-    var abbr = s.type.abbreviation;
-    var name = F1_NAMES[abbr] || abbr;
-    var key = 'f:' + s.id;
+  f1Sessions_(now).forEach(function (x) {
+    var name = F1_NAMES[x.session_name];
+    if (!name) return;
+    var key = 'f:' + x.session_key;
     var prev = mem[key] ? JSON.parse(mem[key]) : null;
-    var state = s.status.type.state;
-    var t = new Date(s.date).getTime();
-    var cur = { st: state, rem: prev ? prev.rem : 0, t: t };
+    var a = new Date(x.date_start).getTime(), z = new Date(x.date_end).getTime();
+    var state = now < a ? 'pre' : now <= z ? 'in' : 'post';
+    // Sessao que ja tinha acabado na primeira leitura nao vira aviso atrasado.
+    var cur = { st: state, rem: prev ? prev.rem : 0, done: prev ? prev.done : (state === 'post' ? 1 : 0), t: a };
     var msgs = [];
-    var gp = ev.shortName || ev.name;
-    if (F1_MAJOR[abbr] && !stale) {
-      if (state === 'pre' && !cur.rem && t - now > 0 && t - now <= 30 * 60000) {
-        cur.rem = 1;
-        msgs.push({ rule: 'f1Remind', title: name + ' em ' + Math.max(1, Math.round((t - now) / 60000)) + ' min', body: ev.name });
-      }
-      if (prev && prev.st === 'pre' && state === 'in') msgs.push({ rule: 'f1Start', title: name + ' começou', body: ev.name });
-      if (prev && prev.st === 'in' && state === 'post') {
-        var top = (s.competitors || []).slice().sort(function (a, b) { return a.order - b.order; });
-        msgs.push({ rule: 'f1End', title: name + ': ' + gp, body: top.slice(0, 3).map(function (c, i) { return (i + 1) + '. ' + c.athlete.shortName; }).join('  '), top: top });
+    var gp = f1GpName_(x);
+    if (!stale && state === 'pre' && !cur.rem && a - now <= 30 * 60000) {
+      cur.rem = 1;
+      msgs.push({ rule: 'f1Remind', title: name + ' em ' + Math.max(1, Math.round((a - now) / 60000)) + ' min', body: gp });
+    }
+    if (!stale && prev && prev.st === 'pre' && state === 'in') msgs.push({ rule: 'f1Start', title: name + ' começou', body: gp });
+    if (state === 'post' && !cur.done && now < z + 6 * 3600000) {
+      var res = fetchJson_(OPENF1 + '/session_result?session_key=' + x.session_key).filter(function (r) { return r.position != null; })
+        .sort(function (u, v) { return u.position - v.position; });
+      if (res.length) {
+        var drv = {};
+        fetchJson_(OPENF1 + '/drivers?session_key=' + x.session_key).forEach(function (d) { drv[d.driver_number] = d; });
+        var top = res.map(function (r) { var d = drv[r.driver_number] || {}; return { pos: r.position, last: d.last_name || ('Carro ' + r.driver_number), full: ((d.first_name || '') + ' ' + (d.last_name || '')).trim() }; });
+        cur.done = 1;
+        msgs.push({ rule: 'f1End', title: name + ': ' + gp, body: top.slice(0, 3).map(function (c) { return c.pos + '. ' + c.last; }).join('  '), top: top });
       }
     }
-    if (!prev || prev.st !== cur.st || prev.rem !== cur.rem) writes[key] = JSON.stringify(cur);
+    if (!prev || prev.st !== cur.st || prev.rem !== cur.rem || prev.done !== cur.done) writes[key] = JSON.stringify(cur);
     msgs.forEach(function (m) {
       fans.forEach(function (d) {
         if (!ruleAllowed_(d, m.rule, now)) return;
         var body = m.body;
         if (m.top && d.follows.drivers && d.follows.drivers.length) {
-          m.top.forEach(function (c, i) {
-            var full = plain_(c.athlete.fullName);
-            var mine = d.follows.drivers.some(function (x) { return full.indexOf(plain_(x)) >= 0; });
-            if (i > 2 && mine) body += '  ·  ' + (i + 1) + '. ' + c.athlete.shortName;
+          m.top.forEach(function (c) {
+            var full = plain_(c.full);
+            var mine = d.follows.drivers.some(function (n) { return full.indexOf(plain_(n)) >= 0; });
+            if (c.pos > 3 && mine) body += '  ·  ' + c.pos + '. ' + c.last;
           });
         }
-        out.push({ dev: d, msg: { title: m.title, body: body, tag: 'f' + s.id, url: '#/f1' } });
+        out.push({ dev: d, msg: { title: m.title, body: body, tag: 'f' + x.session_key, url: '#/f1' } });
       });
     });
   });

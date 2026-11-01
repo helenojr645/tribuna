@@ -8,7 +8,7 @@ const code = readFileSync(new URL('./dist/Code.js', import.meta.url), 'utf8');
 
 function world() {
   const store = {};
-  const w = { games: [], details: {}, espn: { events: [] }, pushes: [], pushCode: 200, failApi: false, clock: Date.parse('2026-11-04T22:00:00Z'), detailFail: false };
+  const w = { games: [], details: {}, f1: { sessions: [], results: [], drivers: [] }, pushes: [], pushCode: 200, failApi: false, clock: Date.parse('2026-11-04T22:00:00Z'), detailFail: false };
   const props = {
     getProperty: (k) => (k in store ? store[k] : null),
     setProperty: (k, v) => { store[k] = String(v); },
@@ -34,13 +34,15 @@ function world() {
       getUuid: () => crypto.randomUUID(),
       DigestAlgorithm: { SHA_256: 'x' },
       computeDigest: (_a, s) => [...crypto.createHash('sha256').update(s).digest()].map((b) => (b > 127 ? b - 256 : b)),
-      newBlob: (s) => ({ getBytes: () => [...Buffer.from(s)] }),
+      newBlob: (s) => ({ getBytes: () => [...Buffer.from(typeof s === 'string' ? s : [])] }),
       formatDate: () => '12'
     },
     UrlFetchApp: {
       fetch(url) {
         if (w.failApi) throw new Error('fora do ar');
-        if (url.includes('espn')) return ok(w.espn);
+        if (url.includes('/session_result')) return ok(w.f1.results);
+        if (url.includes('/drivers')) return ok(w.f1.drivers);
+        if (url.includes('/sessions')) return ok(w.f1.sessions);
         if (url.includes('/game/')) {
           if (w.detailFail) throw new Error('detalhe fora');
           const id = url.match(/gameId=(\d+)/)[1];
@@ -253,20 +255,31 @@ t('regras: gol desligado, silencio, spoiler e campeonato silenciado', () => {
   assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!'], 'time com id 113 silenciado nao cala o campeonato 113');
 });
 
-t('F1: lembrete, largada e podio com piloto seguido', () => {
+t('F1: lembrete, largada, resultado atrasado e piloto seguido', () => {
   const w = world();
   w.register({ follows: { c: [], comp: [], f1: true, drivers: ['Bortoleto'], mute: [] }, rules: { f1Start: true } });
-  const comp = (state) => [{ id: 'r1', date: new Date(Date.parse('2026-11-04T22:20:00Z')).toISOString(), type: { abbreviation: 'Race' }, status: { type: { state } },
-    competitors: state === 'post' ? ['A A', 'B B', 'C C', 'D D', 'Gabriel Bortoleto'].map((n, i) => ({ order: i + 1, athlete: { fullName: n, shortName: n } })) : [] }];
-  w.espn = { events: [{ name: 'GP do Brasil', competitions: comp('pre') }] };
-  assert.deepEqual(w.tick(), [], 'primeira leitura so registra'); w.next();
-  assert.deepEqual(titles(w.tick()), ['Corrida em 19 min']); w.next(20);
-  w.espn.events[0].competitions = comp('in');
-  assert.deepEqual(titles(w.tick()), ['Corrida começou']); w.next();
-  w.espn.events[0].competitions = comp('post');
+  const a = w.clock + 40 * 60000, z = a + 2 * 36e5;
+  w.f1.sessions = [{ session_key: 5, session_name: 'Race', country_name: 'Brazil', date_start: new Date(a).toISOString(), date_end: new Date(z).toISOString() },
+    { session_key: 6, session_name: 'Practice 1', country_name: 'Brazil', date_start: new Date(a).toISOString(), date_end: new Date(z).toISOString() }];
+  assert.deepEqual(w.tick(), [], 'primeira leitura so registra'); w.next(11);
+  assert.deepEqual(titles(w.tick()), ['Corrida em 29 min']); w.next(10);
+  assert.deepEqual(w.tick(), [], 'lembrete nao repete'); w.next(19);
+  assert.deepEqual(titles(w.tick()), ['Corrida começou']); w.next(121);
+  assert.deepEqual(w.tick(), [], 'acabou, resultado ainda nao saiu'); w.next();
+  w.f1.results = [1, 2, 3, 4, 5].map((i) => ({ position: i, driver_number: i }));
+  w.f1.drivers = ['Norris', 'Hamilton', 'Russell', 'Leclerc', 'Bortoleto'].map((n, i) => ({ driver_number: i + 1, first_name: 'X', last_name: n }));
   const m = w.tick();
-  assert.equal(m.length, 1);
-  assert.ok(m[0].body.includes('1. A A') && m[0].body.includes('5. Gabriel Bortoleto'), m[0].body);
+  assert.deepEqual(titles(m), ['Corrida: GP do Brasil']);
+  assert.ok(m[0].body.includes('1. Norris') && m[0].body.includes('5. Bortoleto'), m[0].body);
+  w.next(); assert.deepEqual(w.tick(), [], 'resultado nao repete');
+});
+
+t('F1: sessao ja encerrada na primeira leitura nao avisa', () => {
+  const w = world(); w.register();
+  w.f1.sessions = [{ session_key: 7, session_name: 'Race', country_name: 'Brazil', date_start: new Date(w.clock - 3 * 36e5).toISOString(), date_end: new Date(w.clock - 36e5).toISOString() }];
+  w.f1.results = [{ position: 1, driver_number: 1 }];
+  assert.deepEqual(w.tick(), []);
+  w.next(); assert.deepEqual(w.tick(), []);
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

@@ -116,12 +116,13 @@ window.Fontes = (function () {
     const c = e.competitions[0];
     const h = c.competitors.find((x) => x.homeAway === 'home'), a = c.competitors.find((x) => x.homeAway === 'away');
     const st = e.status || c.status, grupo = grupoEspn(st.type.state);
-    const t = (x) => lado({ name: x.team.displayName, shortName: x.team.shortDisplayName }, grupo === 2 ? -1 : Number(x.score) || 0, x.team.logo);
+    const adiado = /POSTPONED|CANCELED|CANCELLED|ABANDONED|SUSPENDED|FORFEIT/i.test(st.type.name || '');
+    const t = (x) => lado({ name: x.team.displayName, shortName: x.team.shortDisplayName }, grupo === 2 || adiado ? -1 : Number(x.score) || 0, x.team.logo);
     const g = {
       id: 800000000 + (Number(e.id) % 90000000), _espnId: e.id, _fonte: 'ESPN', sportId: 1,
       competitionDisplayName: (e.league && e.league.name) || (c.league && c.league.name) || '', startTime: e.date, statusGroup: grupo,
-      statusText: grupo === 4 ? 'Fim' : grupo === 2 ? 'Programação' : /half.?time/i.test(st.type.description || '') ? 'Intervalo' : 'Ao vivo',
-      shortStatusText: grupo === 4 ? 'Fim' : '', gameTime: parseInt(st.displayClock, 10) || -1,
+      statusText: adiado ? (/POSTPONED/i.test(st.type.name) ? 'Adiado' : 'Cancelado') : grupo === 4 ? 'Fim' : grupo === 2 ? 'Programação' : /half.?time/i.test(st.type.description || '') ? 'Intervalo' : 'Ao vivo',
+      shortStatusText: adiado ? (/POSTPONED/i.test(st.type.name) ? 'Adiado' : 'Cancelado') : grupo === 4 ? 'Fim' : '', _adiado: adiado, gameTime: parseInt(st.displayClock, 10) || -1,
       gameTimeDisplay: grupo === 3 && !/half.?time/i.test(st.type.description || '') ? String(st.displayClock || '').replace(/\s/g, '') : '',
       stages: [], homeCompetitor: t(h), awayCompetitor: t(a), _detalhes: c.details || []
     };
@@ -397,5 +398,5 @@ window.Fontes = (function () {
     };
   }
 
-  return { todos, reconciliar, detalhe, tabela, f1Sessoes, f1Resultado, f1Classificacao, porId, mesmoJogo };
+  return { todos, reconciliar, detalhe, tabela, f1Sessoes, f1Resultado, f1Classificacao, porId, mesmoJogo, mesmoNome };
 })();

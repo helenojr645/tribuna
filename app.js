@@ -16,8 +16,11 @@ const LEAGUES = [
   { id: 389, name: 'Sul-Americana', iv: 2 }, { id: 572, name: 'Champions League', iv: 5 },
   { id: 7, name: 'Premier League', iv: 12 }, { id: 11, name: 'La Liga', iv: 7 },
   { id: 17, name: 'Serie A Italiana', iv: 3 }, { id: 25, name: 'Bundesliga', iv: 2 },
-  { id: 35, name: 'Ligue 1', iv: 5 }, { id: 5930, name: 'Copa do Mundo', iv: 19 }
+  { id: 35, name: 'Ligue 1', iv: 5 }, { id: 5930, name: 'Copa do Mundo', iv: 19 },
+  { id: 114, name: 'Paulistão', iv: 6 }, { id: 28, name: 'Copa da Alemanha', iv: 2 }
 ];
+// Amistosos e torneios de pre-temporada nao entram em "Campeonatos dos meus times".
+const COMP_FORA = new Set([321, 570, 6280]);
 const TENNIS_TOP = [
   { id: 72178, name: 'João Fonseca', iv: 7 }, { id: 10496, name: 'Bia Haddad', iv: 7 },
   { id: 56386, name: 'Carlos Alcaraz', iv: 5 }, { id: 52703, name: 'Jannik Sinner', iv: 7 },
@@ -84,7 +87,7 @@ const R = {
   relogio: {}, animar: null, telaAnterior: null,
   watchData: {}, liveStats: {},
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
-  home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, nav: 0, f1Tab: 'fds', f1Session: null,
+  home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, standingsAt: {}, standingsFail: {}, nav: 0, f1Tab: 'fds', f1Session: null,
   exLive: 1, exQuery: '', known: {}
 };
 
@@ -795,20 +798,66 @@ function ptSession(n) {
 }
 
 // ---------- Explorar ----------
+function compNome(c) { const l = LEAGUES.find((x) => x.id === c.id); return l ? l.name : c.name; }
+function exMeusCampsHtml(comps) {
+  if (!comps || !comps.length) return '';
+  return `<div class="sec"><h2>Campeonatos dos meus times</h2></div><div class="list">${comps.map((l) => `<a class="item" href="#/liga/${Number(l.id)}">${leagueImg(l)}<span class="grow t1">${esc(compNome(l))}</span></a>`).join('')}</div>`;
+}
+// Campeonatos em que os times seguidos jogam, lidos do 365Scores e guardados por 1 dia.
+function meusCampsSalvos() {
+  const ids = S.teams.filter((t) => (t.sportId || 1) === 1).map((t) => t.id);
+  const c = safeParse(localStorage.getItem('tribuna.mcomps'));
+  return { ids, key: ids.slice().sort((a, b) => a - b).join(','), c };
+}
+async function loadMeusCamps() {
+  const { ids, key, c } = meusCampsSalvos();
+  if (!ids.length) return [];
+  if (c.key === key && Date.now() - c.at < 864e5) return c.comps;
+  try {
+    const d = await api(`/competitors/?competitors=${ids.join(',')}`);
+    const info = {}; (d.competitions || []).forEach((x) => { info[x.id] = x; });
+    const out = [], visto = new Set();
+    ids.forEach((id) => {
+      const t = (d.competitors || []).find((x) => x.id === id);
+      if (!t) return;
+      const lista = (t.competitions || []).map((cid) => info[cid]).filter((x) => x && !COMP_FORA.has(x.id) && !/amistos/i.test(x.name));
+      lista.sort((a, b) => (a.id === t.mainCompetitionId ? -1 : b.id === t.mainCompetitionId ? 1 : (b.popularityRank || 0) - (a.popularityRank || 0)));
+      lista.forEach((x) => { if (!visto.has(x.id)) { visto.add(x.id); out.push({ id: x.id, name: x.name, iv: x.imageVersion || 1 }); } });
+    });
+    localStorage.setItem('tribuna.mcomps', JSON.stringify({ key, at: Date.now(), comps: out }));
+    return out;
+  } catch (_) { return c.key === key ? c.comps : []; }
+}
+async function fillMeusCamps() {
+  const key = meusCampsSalvos().key;
+  const comps = await loadMeusCamps();
+  const el = $('#ex-mcomps'), ol = $('#ex-others');
+  if (!el || meusCampsSalvos().key !== key) return;
+  el.innerHTML = exMeusCampsHtml(comps);
+  if (ol) ol.innerHTML = exOutrosHtml(comps);
+}
+function exOutrosHtml(meus) {
+  const ja = new Set((meus || []).map((c) => c.id));
+  const resto = LEAGUES.filter((l) => !ja.has(l.id));
+  return resto.length ? `<div class="sec"><h2>${ja.size ? 'Outros campeonatos' : 'Campeonatos'}</h2></div><div class="list">${resto.map((l) => `<a class="item" href="#/liga/${l.id}">${leagueImg(l)}<span class="grow t1">${esc(l.name)}</span></a>`).join('')}</div>` : '';
+}
 function renderExplorarShell() {
-  const leagues = LEAGUES.map((l) => `<a class="item" href="#/liga/${l.id}">${leagueImg(l)}<span class="grow t1">${esc(l.name)}</span></a>`).join('');
+  const salvo = meusCampsSalvos();
+  const meus = salvo.c.key === salvo.key ? salvo.c.comps : [];
+  const times = S.teams.length ? `<div class="sec"><h2>Meus times</h2></div><div class="meus">${S.teams.map((t) => `<a class="meu" href="#/time/${Number(t.id)}">${crest(t, 96)}<span>${esc(t.name)}</span></a>`).join('')}</div>` : '';
   return `<header class="top"><h1>Explorar</h1></header>
     <div class="search">${ICONS.search}<label class="vh" for="q">Buscar</label><input id="q" type="search" placeholder="Time, seleção ou tenista" autocomplete="off" autocapitalize="off" enterkeyhint="search" value="${esc(R.exQuery)}"></div>
     <div id="ex-results"></div>
     <div id="ex-browse">
+      ${times}
       <div class="chips" role="group" aria-label="Esporte">
         <button class="chip" data-act="exsport" data-v="1" aria-pressed="${R.exLive === 1}">Futebol ao vivo</button>
         <button class="chip" data-act="exsport" data-v="3" aria-pressed="${R.exLive === 3}">Tênis ao vivo</button>
         <a class="chip" href="#/f1">Fórmula 1</a>
       </div>
       <div id="ex-live"><div class="skeleton"></div></div>
-      <div class="sec"><h2>Campeonatos</h2></div>
-      <div class="list">${leagues}</div>
+      <div id="ex-mcomps">${exMeusCampsHtml(meus)}</div>
+      <div id="ex-others">${exOutrosHtml(meus)}</div>
     </div>`;
 }
 async function loadExLive() {
@@ -861,13 +910,79 @@ async function loadTeam(id) {
   await comReserva(async () => {
     const [fx, rs] = await Promise.all([api(`/games/fixtures/?competitors=${id}`), api(`/games/results/?competitors=${id}`)]);
     remember(fx.competitors); remember(rs.competitors);
-    R.team = { id, fixtures: fx.games || [], results: (rs.games || []).slice().sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
+    const comps = {}; [rs, fx].forEach((d) => (d.competitions || []).forEach((c) => { comps[c.id] = c; }));
+    R.team = { id, comps, fixtures: fx.games || [], results: (rs.games || []).slice().sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
   }, async () => {
     await loadHomeReserva();
     const meus = R.home.games.filter((g) => g.homeCompetitor.id === id || g.awayCompetitor.id === id);
-    R.team = { id, fixtures: meus.filter((g) => g.statusGroup !== 4), results: meus.filter((g) => g.statusGroup === 4).sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
+    R.team = { id, comps: {}, fixtures: meus.filter((g) => g.statusGroup !== 4), results: meus.filter((g) => g.statusGroup === 4).sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
   });
   R.lastOk = Date.now(); R.failed = false;
+  // Tabelas dos campeonatos em andamento (jogo nos ultimos 45 dias ou marcado), em paralelo.
+  const t = R.team;
+  const quem = R.known[id] || S.teams.find((x) => x.id === id) || {};
+  if (t.id !== id || quem.sportId === 3) return;
+  const ultimo = t.results[0] ? new Date(t.results[0].startTime).getTime() + 2 * 36e5 : 0;
+  const precisa = (cid) => {
+    if (Date.now() - (R.standingsFail[cid] || 0) < 5 * 6e4) return false;
+    const at = R.standingsAt[cid] || 0;
+    return !R.standings[cid] || Date.now() - at > 10 * 6e4 || (ultimo > at && ultimo < Date.now());
+  };
+  const faltam = timeCampsAtivos(t, true).filter((c) => c.tab && precisa(c.id));
+  if (!faltam.length) return;
+  Promise.all(faltam.map((c) => loadStandings(c.id).catch(() => null))).then(() => {
+    if (R.mainRoute === '#/time/' + id) renderMainView();
+  });
+}
+// Todos os campeonatos da temporada (filtro); "ativo" = jogo nos ultimos 45 dias ou marcado (tabela).
+function timeCampsAtivos(t, soAtivos) {
+  const lim = Date.now() - 45 * 864e5, ordem = [], visto = {};
+  t.fixtures.concat(t.results).forEach((g) => {
+    if (soAtivos && g.statusGroup === 4 && new Date(g.startTime) < lim) return;
+    const id = g.competitionId;
+    if (!id || COMP_FORA.has(id) || visto[id]) return;
+    const c = t.comps[id] || {};
+    if (/amistos/i.test(c.name || g.competitionDisplayName || '')) return;
+    visto[id] = 1;
+    const tab = c.hasStandings != null ? !!c.hasStandings : !!g.hasStandings;
+    ordem.push({ id, name: compNome({ id, name: c.name || String(g.competitionDisplayName || '').split(' - ')[0] }), iv: c.imageVersion || 1, tab });
+  });
+  return ordem;
+}
+function semAcento(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim(); }
+// Linha do time na tabela + 2 acima e 2 abaixo, no mesmo grupo. Na reserva ESPN o time nao tem id: casa pelo nome.
+function timeNaTabela(d, team) {
+  const st = d && d.standings && d.standings[0];
+  if (!st || !st.rows) return null;
+  const nome = semAcento(team.name), curto = semAcento(team.shortName);
+  const semId = st.rows.filter((x) => !x.competitor.id);
+  const parecidos = semId.filter((x) => Fontes.mesmoNome(team.name, x.competitor.name));
+  const r = st.rows.find((x) => x.competitor.id === team.id)
+    || semId.find((x) => [semAcento(x.competitor.name), semAcento(x.competitor.shortName)].some((n) => n && (n === nome || n === curto)))
+    // Nome parecido so vale se for um unico time (Manchester United x City).
+    || (parecidos.length === 1 ? parecidos[0] : null);
+  if (!r) return null;
+  const grupo = st.rows.filter((x) => (x.groupNum || 0) === (r.groupNum || 0)).sort((a, b) => a.position - b.position);
+  const i = grupo.indexOf(r);
+  const ini = Math.max(0, Math.min(i - 2, grupo.length - 5));
+  const zonas = {}; (st.destinations || []).forEach((z) => { zonas[z.num] = z; });
+  const nomeGrupo = (st.groups || []).find((g) => g.num === r.groupNum);
+  return { linha: r, total: grupo.length, zona: zonas[r.destinationNum], grupo: nomeGrupo && nomeGrupo.name, d: { standings: [{ ...st, rows: grupo.slice(ini, ini + 5).map((x) => ({ ...x, groupNum: 0, competitor: x === r ? { ...x.competitor, id: team.id } : x.competitor })), groups: [] }] } };
+}
+function formaTime(t, id, lista) {
+  const valeu = (g) => g.sportId === 1 && g.statusGroup === 4 && !g._adiado && Number(g.homeCompetitor.score) >= 0 && Number(g.awayCompetitor.score) >= 0
+    && !/adiad|cancel|abandon|suspens|postpon|w\.?o\b/i.test(`${g.statusText || ''} ${g.shortStatusText || ''}`);
+  const r = lista.filter(valeu).slice(0, 5).reverse();
+  if (!r.length) return '';
+  const pills = r.map((g) => {
+    const casa = g.homeCompetitor.id === id;
+    const eu = casa ? g.homeCompetitor : g.awayCompetitor, ele = casa ? g.awayCompetitor : g.homeCompetitor;
+    const a = Number(eu.score), b = Number(ele.score);
+    const k = a > b ? 'v' : a < b ? 'd' : 'e';
+    const txt = { v: 'Vitória', e: 'Empate', d: 'Derrota' }[k];
+    return `<a class="fm ${k}" href="#/jogo/${Number(g.id)}" title="${txt} ${a}x${b} contra ${esc(ele.shortName || ele.name)}"><span aria-hidden="true">${k.toUpperCase()}</span><span class="vh">${txt} ${a} a ${b} contra ${esc(ele.name)}</span></a>`;
+  }).join('');
+  return `<div class="forma"><span class="t2">Últimos ${r.length}</span>${pills}</div>`;
 }
 function backBtn() { return `<button class="icon-btn" data-act="back" aria-label="Voltar">${ICONS.back}</button>`; }
 function renderTeam(id) {
@@ -878,26 +993,49 @@ function renderTeam(id) {
     ${on ? `<button class="icon-btn ${isMuted(id) ? '' : 'on'}" data-act="mute" data-id="${id}" aria-pressed="${!isMuted(id)}" aria-label="Avisos deste">${isMuted(id) ? ICONS.bellOff : ICONS.bell}</button>` : ''}
     <button class="follow ${on ? 'on' : ''}" data-act="follow" data-id="${id}" aria-pressed="${on}">${on ? 'Seguindo' : 'Seguir'}</button></header>`;
   if (!t) return head + '<div class="skeleton"></div><div class="skeleton"></div>';
-  const fx = t.fixtures.slice(0, 5), rs = t.results.slice(0, 10);
-  return `${head}
+  const tenis = c.sportId === 3;
+  const camps = tenis ? [] : timeCampsAtivos(t);
+  const selId = (R.teamComp || {})[id], sel = camps.some((x) => x.id === selId) ? selId : 0;
+  const daComp = (g) => !sel || g.competitionId === sel;
+  const fx = t.fixtures.filter(daComp).slice(0, 5), rs = t.results.filter(daComp).slice(0, 10);
+  const esconde = S.spoiler && !R.reveal.has('t' + id);
+  const chips = camps.length > 1 ? `<div class="chips" role="group" aria-label="Campeonato">
+      <button class="chip" data-act="tcomp" data-v="0" aria-pressed="${!sel}">Todos</button>
+      ${camps.map((x) => `<button class="chip" data-act="tcomp" data-v="${x.id}" aria-pressed="${sel === x.id}">${esc(x.name)}</button>`).join('')}</div>` : '';
+  const ativos = new Set(tenis ? [] : timeCampsAtivos(t, true).map((x) => x.id));
+  const tabelas = camps.filter((x) => x.tab && ativos.has(x.id) && (!sel || x.id === sel)).map((x) => {
+    const n = timeNaTabela(R.standings[x.id], c);
+    if (!n) return '';
+    const resumo = `${Number(n.linha.position) || ''}º de ${n.total}${n.grupo ? ' no ' + esc(n.grupo) : ''}${n.zona ? ` · <b style="color:${corOk(n.zona.color)}">${esc(n.zona.name)}${n.linha.destinationGuaranteed ? ' (garantido)' : ''}</b>` : ''}`;
+    return `<div class="sec"><h2>${esc(x.name)}</h2><a class="sec-link" href="#/liga/${Number(x.id)}">Tabela completa</a></div>
+      <div class="t2 posresumo">${resumo}</div>${standingsTable(n.d, [id])}`;
+  }).join('');
+  const forma = tenis ? '' : formaTime(t, id, t.results.filter(daComp));
+  const blocoTabela = tabelas || forma ? (esconde
+    ? `<button class="btn" data-act="revealteam" data-v="${id}">Mostrar posição e forma</button>`
+    : forma + tabelas) : '';
+  const vazio = fx.length || rs.length ? '' : '<div class="empty">Sem jogos registrados no momento.</div>';
+  return `${head}${chips}${blocoTabela}
     ${fx.length ? `<div class="sec"><h2>Próximos</h2></div><div class="stack">${fx.map((g) => gameCard(g)).join('')}</div>` : ''}
     ${rs.length ? `<div class="sec"><h2>Resultados</h2></div><div class="stack">${rs.map((g) => gameCard(g)).join('')}</div>` : ''}
-    ${fx.length || rs.length ? '' : '<div class="empty">Sem jogos registrados no momento.</div>'}`;
+    ${vazio}`;
 }
 
 // ---------- Campeonato ----------
 async function loadStandings(id) {
   let d;
   try {
+    if (Date.now() < R.primaryDownUntil) throw new Error('365Scores fora');
     d = await api(`/standings/?competitions=${id}`);
     (d.standings || []).forEach((s) => (s.rows || []).forEach((r) => remember([r.competitor])));
     guardaZonas(id, d);
   } catch (e) {
     // Reserva ESPN; sem ela, fica a ultima tabela lida.
-    d = await Fontes.tabela(id).catch(() => { if (R.standings[id]) return R.standings[id]; throw e; });
+    d = await Fontes.tabela(id).catch(() => { if (R.standings[id]) return R.standings[id]; R.standingsFail[id] = Date.now(); throw e; });
     if (d._fonte === 'ESPN') zonasDaMemoria(id, d);
   }
   R.standings[id] = d;
+  R.standingsAt[id] = Date.now();
   return d;
 }
 // Zonas (Libertadores, Champions, rebaixamento...) do 365Scores ficam salvas por posicao.
@@ -917,11 +1055,12 @@ function zonasDaMemoria(id, d) {
   st.destinations = z.destinations;
   st.rows.forEach((r) => { r.destinationNum = z.pos[(r.groupNum || 0) + ':' + r.position] || null; });
 }
+function corOk(c) { return /^#[0-9a-f]{3,8}$/i.test(String(c || '')) ? c : '#98A2AA'; }
 function zonasLegenda(dest, rows) {
   const usadas = dest.filter((z) => rows.some((r) => r.destinationNum === z.num));
   if (!usadas.length) return '';
   const garantido = rows.some((r) => r.destinationGuaranteed);
-  return `<ul class="zonas">${usadas.map((z) => `<li><i style="--z:${esc(z.color)}"></i>${esc(z.name)}</li>`).join('')}${garantido ? '<li><b class="gar">✓</b>vaga garantida</li>' : ''}</ul>`;
+  return `<ul class="zonas">${usadas.map((z) => `<li><i style="--z:${corOk(z.color)}"></i>${esc(z.name)}</li>`).join('')}${garantido ? '<li><b class="gar">✓</b>vaga garantida</li>' : ''}</ul>`;
 }
 function standingsTable(d, highlight) {
   const st = d && d.standings && d.standings[0];
@@ -936,7 +1075,7 @@ function standingsTable(d, highlight) {
       const c = r.competitor;
       const sg = r.ratio != null ? r.ratio : (r.for || 0) - (r.against || 0);
       const z = zona[r.destinationNum];
-      const zAttr = z ? ` style="--z:${esc(z.color)}" title="${esc(z.name)}${r.destinationGuaranteed ? ' (garantido)' : ''}"` : '';
+      const zAttr = z ? ` style="--z:${corOk(z.color)}" title="${esc(z.name)}${r.destinationGuaranteed ? ' (garantido)' : ''}"` : '';
       return `<tr class="${highlight && highlight.includes(c.id) ? 'me' : ''}"><td class="pos tn${z ? ' zn' : ''}"${zAttr}>${r.position || ''}${z ? `<span class="vh">, ${esc(z.name)}${r.destinationGuaranteed ? ' garantido' : ''}</span>` : ''}${r.destinationGuaranteed ? '<b class="gar" aria-hidden="true">✓</b>' : ''}</td>
         <td class="tm">${c.id ? `<a href="#/time/${Number(c.id)}">${crest(c)}<em>${esc(c.shortName || c.name)}</em></a>` : `<span>${crest(c)}<em>${esc(c.shortName || c.name)}</em></span>`}</td>
         <td class="b tn">${num(r.points)}</td><td class="tn">${num(r.gamePlayed)}</td><td class="tn">${num(r.gamesWon)}</td><td class="tn">${num(r.gamesEven)}</td><td class="tn">${num(r.gamesLost)}</td><td class="tn">${sg > 0 ? '+' : ''}${Math.round(sg)}</td></tr>`;
@@ -967,7 +1106,7 @@ function renderLeague(id) {
   const done = L.games.filter((g) => g.statusGroup === 4).sort((a, b) => by(b, a)).slice(0, 6);
   const block = (t, arr) => arr.length ? `<div class="sec"><h2>${t}</h2></div><div class="stack">${arr.map((g) => gameCard(g)).join('')}</div>` : '';
   return `${head}${block('Ao vivo', live)}${block('Próximos', up)}${block('Últimos', done)}
-    <div class="sec"><h2>Tabela</h2></div>${S.spoiler && !R.reveal.has('l' + id) ? `<button class="btn" data-act="revealleague" data-v="${id}">Mostrar tabela</button>` : standingsTable(L.st, S.teams.map((t) => t.id))}`;
+    ${L.st && L.st.standings && L.st.standings[0] && (L.st.standings[0].rows || []).length ? `<div class="sec"><h2>Tabela</h2></div>${S.spoiler && !R.reveal.has('l' + id) ? `<button class="btn" data-act="revealleague" data-v="${id}">Mostrar tabela</button>` : standingsTable(L.st, S.teams.map((t) => t.id))}` : (!L.st ? '<div class="sec"><h2>Tabela</h2></div><div class="empty">Não consegui carregar a tabela agora. Tento de novo sozinho.</div>' : L.games.length ? '' : '<div class="empty">Sem jogos nem tabela no momento.</div>')}`;
 }
 
 // ---------- Formula 1 ----------
@@ -1762,6 +1901,7 @@ async function route() {
       if (r.view === 'explorar') {
         main().innerHTML = renderExplorarShell();
         bindExplorar();
+        fillMeusCamps().catch(() => {});
       } else if (r.view === 'ajustes') {
         main().innerHTML = renderAjustes();
         loadRoboStatus();
@@ -1904,6 +2044,8 @@ const ACTIONS = {
   f1tab(el) { R.f1Tab = el.dataset.v; R.animar = true; rerender(); },
   f1sess(el) { R.f1Session = el.dataset.v; rerender(); },
   revealleague(el) { R.reveal.add('l' + el.dataset.v); rerender(); },
+  revealteam(el) { R.reveal.add('t' + el.dataset.v); rerender(); },
+  tcomp(el) { const tid = Number(R.mainRoute.split('/')[2]); R.teamComp = { ...(R.teamComp || {}), [tid]: Number(el.dataset.v) || 0 }; rerender(); },
   revealf1(el) { R.reveal.add('f1' + el.dataset.v); rerender(); },
   reveal(el) { R.reveal.add(Number(el.dataset.id)); rerender(); },
   gtab(el) {

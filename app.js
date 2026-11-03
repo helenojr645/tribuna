@@ -891,16 +891,43 @@ async function loadStandings(id) {
   try {
     d = await api(`/standings/?competitions=${id}`);
     (d.standings || []).forEach((s) => (s.rows || []).forEach((r) => remember([r.competitor])));
+    guardaZonas(id, d);
   } catch (e) {
     // Reserva ESPN; sem ela, fica a ultima tabela lida.
     d = await Fontes.tabela(id).catch(() => { if (R.standings[id]) return R.standings[id]; throw e; });
+    if (d._fonte === 'ESPN') zonasDaMemoria(id, d);
   }
   R.standings[id] = d;
   return d;
 }
+// Zonas (Libertadores, Champions, rebaixamento...) do 365Scores ficam salvas por posicao.
+// Na reserva ESPN sem zona (Brasileirao), usa a ultima lida; nao inventa regra fixa.
+function guardaZonas(id, d) {
+  const st = d && d.standings && d.standings[0];
+  if (!st || !(st.destinations || []).length) return;
+  const pos = {};
+  (st.rows || []).forEach((r) => { if (r.destinationNum) pos[(r.groupNum || 0) + ':' + r.position] = r.destinationNum; });
+  try { localStorage.setItem('tribuna.zonas.' + id, JSON.stringify({ at: Date.now(), destinations: st.destinations, pos })); } catch (_) {}
+}
+function zonasDaMemoria(id, d) {
+  const st = d.standings && d.standings[0];
+  if (!st || (st.destinations || []).length) return;
+  const z = safeParse(localStorage.getItem('tribuna.zonas.' + id));
+  if (!z || !z.pos || Date.now() - z.at > 120 * 864e5) return;
+  st.destinations = z.destinations;
+  st.rows.forEach((r) => { r.destinationNum = z.pos[(r.groupNum || 0) + ':' + r.position] || null; });
+}
+function zonasLegenda(dest, rows) {
+  const usadas = dest.filter((z) => rows.some((r) => r.destinationNum === z.num));
+  if (!usadas.length) return '';
+  const garantido = rows.some((r) => r.destinationGuaranteed);
+  return `<ul class="zonas">${usadas.map((z) => `<li><i style="--z:${esc(z.color)}"></i>${esc(z.name)}</li>`).join('')}${garantido ? '<li><b class="gar">✓</b>vaga garantida</li>' : ''}</ul>`;
+}
 function standingsTable(d, highlight) {
   const st = d && d.standings && d.standings[0];
   if (!st || !st.rows || !st.rows.length) return '<div class="empty">Sem tabela para esta fase.</div>';
+  const dest = st.destinations || [];
+  const zona = {}; dest.forEach((z) => { zona[z.num] = z; });
   const groups = {};
   st.rows.forEach((r) => { const k = r.groupNum || 0; (groups[k] = groups[k] || []).push(r); });
   const names = {}; (st.groups || []).forEach((g) => { names[g.num] = g.name; });
@@ -908,12 +935,14 @@ function standingsTable(d, highlight) {
     const rows = groups[k].slice().sort((a, b) => (a.position || 0) - (b.position || 0)).map((r) => {
       const c = r.competitor;
       const sg = r.ratio != null ? r.ratio : (r.for || 0) - (r.against || 0);
-      return `<tr class="${highlight && highlight.includes(c.id) ? 'me' : ''}"><td class="pos tn">${r.position || ''}</td>
+      const z = zona[r.destinationNum];
+      const zAttr = z ? ` style="--z:${esc(z.color)}" title="${esc(z.name)}${r.destinationGuaranteed ? ' (garantido)' : ''}"` : '';
+      return `<tr class="${highlight && highlight.includes(c.id) ? 'me' : ''}"><td class="pos tn${z ? ' zn' : ''}"${zAttr}>${r.position || ''}${z ? `<span class="vh">, ${esc(z.name)}${r.destinationGuaranteed ? ' garantido' : ''}</span>` : ''}${r.destinationGuaranteed ? '<b class="gar" aria-hidden="true">✓</b>' : ''}</td>
         <td class="tm">${c.id ? `<a href="#/time/${Number(c.id)}">${crest(c)}<em>${esc(c.shortName || c.name)}</em></a>` : `<span>${crest(c)}<em>${esc(c.shortName || c.name)}</em></span>`}</td>
         <td class="b tn">${num(r.points)}</td><td class="tn">${num(r.gamePlayed)}</td><td class="tn">${num(r.gamesWon)}</td><td class="tn">${num(r.gamesEven)}</td><td class="tn">${num(r.gamesLost)}</td><td class="tn">${sg > 0 ? '+' : ''}${Math.round(sg)}</td></tr>`;
     }).join('');
     return `${k !== '0' && names[k] ? `<div class="subhead">${esc(names[k])}</div>` : ''}<table class="table"><thead><tr><th><span class="vh">Posição</span></th><th>Time</th><th>P</th><th>J</th><th>V</th><th>E</th><th>D</th><th>SG</th></tr></thead><tbody>${rows}</tbody></table>`;
-  }).join('');
+  }).join('') + zonasLegenda(dest, st.rows);
 }
 async function loadLeague(id) {
   const [st, gm] = await Promise.all([loadStandings(id).catch(() => null), comReserva(() => api(`/games/current/?competitions=${id}`), async () => {

@@ -296,6 +296,12 @@ img { display: block; }
 .table td.tm a, .table td.tm span { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; min-height: 40px; }
 .table td.tm em { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table td.pos { color: var(--muted); width: 26px; text-align: center; }
+.table td.pos.zn { color: var(--ink); font-weight: 700; box-shadow: inset 3px 0 0 var(--z); position: relative; }
+.table td.pos .gar { position: absolute; top: 3px; right: 1px; font-size: 9px; line-height: 1; color: var(--z); }
+.zonas { list-style: none; margin: 12px 0 4px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; color: var(--muted); }
+.zonas li { display: inline-flex; align-items: center; gap: 7px; }
+.zonas i { width: 10px; height: 10px; border-radius: 3px; background: var(--z); flex: none; }
+.zonas .gar { color: var(--ink); font-size: 12px; }
 .table td.b { font-weight: 800; }
 .table tr.me td { background: #232B12; }
 .table .crest { width: 20px; height: 20px; }

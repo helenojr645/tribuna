@@ -319,6 +319,19 @@ window.Fontes = (function () {
   }
 
   // ---------- Tabela ----------
+  // Zonas da ESPN vem em ingles e com cor propria: traduz e usa as cores do 365Scores.
+  function zonaEspn(desc, cor) {
+    if (!desc) return null;
+    const t = [
+      [/relegation play/i, 'Repescagem contra o rebaixamento', '#FF9807'], [/relegation/i, 'Rebaixamento', '#E61034'],
+      [/champions league qual/i, 'Pré-Liga dos Campeões', '#FF9807'], [/champions league/i, 'Liga dos Campeões', '#F5CB25'],
+      [/europa league qual/i, 'Pré-Liga Europa', '#23EBE4'], [/europa league/i, 'Liga Europa', '#23EBE4'], [/conference/i, 'Conference League', '#2FD27A'],
+      [/libertadores.*qual|pre.?libertadores/i, 'Pré-Libertadores', '#FF9807'], [/libertadores/i, 'Libertadores', '#F5CB25'], [/sudamericana|sul.?americana/i, 'Sul-Americana', '#23EBE4'],
+      [/round of 16/i, 'Oitavas de final', '#B7D42A'], [/quarter/i, 'Quartas de final', '#B7D42A'], [/playoff/i, 'Playoffs', '#AB2CF5'],
+      [/promotion play/i, 'Repescagem do acesso', '#7FB8FF'], [/promotion/i, 'Acesso', '#2FD27A'], [/eliminat/i, 'Eliminados', '#E61034']
+    ].find((x) => x[0].test(desc));
+    return t ? { name: t[1], color: t[2] } : { name: desc, color: String(cor || '#98A2AA').replace(/^#+/, '#') };
+  }
   async function tabela(compId) {
     const slug = LIGAS_ESPN[compId];
     if (!slug) throw new Error('sem reserva para este campeonato');
@@ -326,18 +339,23 @@ window.Fontes = (function () {
     const blocos = (d.children || []).filter((x) => x.standings && x.standings.entries);
     const rows = [];
     const groups = [];
+    const dest = [];
     blocos.forEach((b, i) => {
       if (blocos.length > 1) groups.push({ num: i + 1, name: b.name });
       b.standings.entries.forEach((e, pos) => {
         const st = (n) => { const x = (e.stats || []).find((y) => y.name === n); return x ? Number(x.value) || 0 : 0; };
+        const z = zonaEspn(e.note && e.note.description, e.note && e.note.color);
+        let num = null;
+        if (z) { const ja = dest.find((x) => x.name === z.name); if (ja) num = ja.num; else { num = dest.length + 1; dest.push({ num, name: z.name, color: z.color }); } }
         rows.push({
           competitor: { id: 0, name: e.team.displayName, shortName: e.team.shortDisplayName, logo: e.team.logos && e.team.logos[0] && e.team.logos[0].href },
-          groupNum: blocos.length > 1 ? i + 1 : 0, position: st('rank') || pos + 1, points: st('points'), gamePlayed: st('gamesPlayed'), gamesWon: st('wins'), gamesEven: st('ties'), gamesLost: st('losses'), ratio: st('pointDifferential')
+          groupNum: blocos.length > 1 ? i + 1 : 0, position: st('rank') || pos + 1, points: st('points'), gamePlayed: st('gamesPlayed'), gamesWon: st('wins'), gamesEven: st('ties'), gamesLost: st('losses'), ratio: st('pointDifferential'),
+          destinationNum: num
         });
       });
     });
     if (!rows.length) throw new Error('tabela vazia');
-    return { standings: [{ rows, groups }], competitions: [], _fonte: 'ESPN' };
+    return { standings: [{ rows, groups, destinations: dest }], competitions: [], _fonte: 'ESPN' };
   }
 
   // ---------- Formula 1 ----------

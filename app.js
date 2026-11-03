@@ -88,7 +88,7 @@ const R = {
   watchData: {}, liveStats: {},
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
   home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, standingsAt: {}, standingsFail: {}, nav: 0, f1Tab: 'fds', f1Session: null,
-  exLive: 1, exQuery: '', known: {}
+  exLive: 1, exQuery: '', known: {}, marc: {}
 };
 
 function safeParse(s) { try { return JSON.parse(s) || {}; } catch (_) { return {}; } }
@@ -237,13 +237,15 @@ function gameCard(g, opts) {
       <div class="row ${hWin ? 'lose' : ''}">${crest(a)}<span class="name">${esc(a.name)}</span><span class="sets tn ${spoil ? 'spoil' : ''}">${col('a')}${pts('a')}</span></div>`;
   } else {
     const sc = (c) => soon ? '' : `<span class="pts tn ${spoil ? 'spoil' : ''}">${spoil ? '0' : num(c.score)}</span>`;
+    const mc = !soon && !spoil && g.sportId === 1 ? R.marc[g.id] : null;
+    const autores = (lista) => lista && lista.length ? `<small class="autores">${ICONS.goal}${esc(lista.join(', '))}</small>` : '';
+    const nome = (c, lista) => `<span class="name"><span class="nm">${esc(c.shortName || c.name)}</span>${autores(lista)}</span>`;
     rows = `
-      <div class="row ${aWin ? 'lose' : ''} ${goalNow === 'h' ? 'scored' : ''}">${crest(h)}<span class="name">${esc(h.shortName || h.name)}</span>${sc(h)}</div>
-      <div class="row ${hWin ? 'lose' : ''} ${goalNow === 'a' ? 'scored' : ''}">${crest(a)}<span class="name">${esc(a.shortName || a.name)}</span>${sc(a)}</div>`;
+      <div class="row ${aWin ? 'lose' : ''} ${goalNow === 'h' ? 'scored' : ''}">${crest(h)}${nome(h, mc && mc.h)}${sc(h)}</div>
+      <div class="row ${hWin ? 'lose' : ''} ${goalNow === 'a' ? 'scored' : ''}">${crest(a)}${nome(a, mc && mc.a)}${sc(a)}</div>`;
   }
   const when = soon ? `<div class="when"><b class="tn">${hm(g.startTime)}</b><small>${spanAte(g.startTime, 'em ' + inTime(new Date(g.startTime) - Date.now()))}</small></div>` : '';
   return `<a class="card ${live ? 'live' : ''} ${soon ? 'has-when' : ''} ${selected ? 'selected' : ''}" href="#/jogo/${Number(g.id)}" data-g="${Number(g.id)}" style="--c1:${colorOf(h.color)};--c2:${colorOf(a.color)}">
-    <i class="stripe" aria-hidden="true"></i>
     <div class="meta"><span>${esc(compLine)}</span>${status}</div>
     ${rows}${when}
     ${live ? linhaNumeros(g) : ''}
@@ -284,9 +286,43 @@ function acharJogo(id) {
   return Fontes.porId[id] || ((R.home && R.home.games) || []).find((g) => g.id === id) || null;
 }
 
+// ---------- Quem fez o gol ----------
+// A lista de jogos nao traz os lances: os autores vem da leitura completa do jogo e ficam guardados por jogo.
+function golsDoJogo(g) {
+  const pen = (g.stages || []).find((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`));
+  return (g.events || []).filter((e) => e.eventType && e.eventType.id === 1 && !(pen && e.stageId === pen.id));
+}
+function rotuloGol(g, e) {
+  const tipo = (e.eventType && e.eventType.subTypeName) || '';
+  const extra = /contra/i.test(tipo) ? ' (contra)' : /p[eê]n/i.test(tipo) ? ' (pên.)' : '';
+  return `${playerName(g, e.playerId) || 'Gol'}${extra} ${e.gameTimeDisplay || ''}`.trim();
+}
+function guardaMarcadores(g) {
+  if (!g || g.sportId !== 1) return;
+  const ev = Array.isArray(g.events) ? g.events : [];
+  // Reserva sem lances nao apaga autores ja lidos na principal.
+  if (g._fonte && !ev.length && R.marc[g.id]) return;
+  const gols = golsDoJogo({ ...g, events: ev });
+  const lado = (cid) => gols.filter((e) => e.competitorId === cid).map((e) => rotuloGol(g, e));
+  R.marc[g.id] = { h: lado(g.homeCompetitor.id), a: lado(g.awayCompetitor.id), n: num(g.homeCompetitor.score) + num(g.awayCompetitor.score), at: Date.now() };
+}
+// Placar mudou desde a ultima leitura dos lances: os autores estao velhos.
+function marcVelho(g) {
+  const m = R.marc[g.id];
+  return !m || m.n !== num(g.homeCompetitor.score) + num(g.awayCompetitor.score);
+}
+// No maximo uma leitura por jogo a cada 90 s, mesmo se a lista e o jogo discordarem do placar.
+function podeLerMarc(g) {
+  const t = (R.marcTry || (R.marcTry = {}))[g.id] || 0;
+  if (Date.now() - t < 9e4) return false;
+  R.marcTry[g.id] = Date.now();
+  return true;
+}
+
 // ---------- Relogio do jogo ----------
 // A fonte manda minuto, segundo e se o relogio esta correndo. Entre leituras ele anda aqui.
 function registrarRelogio(g) {
+  guardaMarcadores(g);
   const p = g && g.preciseGameTime;
   if (!p || g.statusGroup !== 3) { if (g) delete R.relogio[g.id]; return; }
   R.relogio[g.id] = { m: p.minutes, s: p.seconds, run: !!p.autoProgress, dir: p.clockDirection === -1 ? -1 : 1, at: Date.now(), st: g.statusText || '' };
@@ -465,7 +501,13 @@ async function loadLiveStats() {
   }));
   await Promise.all(vivos.map(async (g) => {
     const r = R.relogio[g.id];
-    if (r && Date.now() - r.at < 5 * 6e4) return;
+    // Gol novo: le os lances ja, para o autor aparecer junto com o placar.
+    if (r && Date.now() - r.at < 5 * 6e4 && !(marcVelho(g) && podeLerMarc(g))) return;
+    try { registrarRelogio((await api(`/game/?gameId=${g.id}`)).game); } catch (_) {}
+  }));
+  const outros = R.home.games.filter((g) => g.sportId === 1 && !vivos.includes(g) && !S.watch[g.id] && gameIsMine(g) && marcVelho(g)
+    && (g.statusGroup === 3 || (g.statusGroup === 4 && Date.now() - new Date(g.startTime) < 36 * 36e5))).slice(0, 8).filter(podeLerMarc);
+  await Promise.all(outros.map(async (g) => {
     try { registrarRelogio((await api(`/game/?gameId=${g.id}`)).game); } catch (_) {}
   }));
 }
@@ -990,9 +1032,10 @@ function renderTeam(id) {
   const c = R.known[id] || S.teams.find((t) => t.id === id) || { id, name: '' };
   const t = R.team && R.team.id === id ? R.team : null;
   const on = isTeam(id);
-  const head = `<header class="top" style="justify-content:flex-start">${backBtn()}${c.name ? crest(c, 64) : ''}<h1 style="font-size:22px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</h1>
+  const head = `<header class="capa" style="--c1:${colorOf(c.color)}"><div class="capa-bar">${backBtn()}<span style="flex:1"></span>
     ${on ? `<button class="icon-btn ${isMuted(id) ? '' : 'on'}" data-act="mute" data-id="${id}" aria-pressed="${!isMuted(id)}" aria-label="Avisos deste">${isMuted(id) ? ICONS.bellOff : ICONS.bell}</button>` : ''}
-    <button class="follow ${on ? 'on' : ''}" data-act="follow" data-id="${id}" aria-pressed="${on}">${on ? 'Seguindo' : 'Seguir'}</button></header>`;
+    <button class="follow ${on ? 'on' : ''}" data-act="follow" data-id="${id}" aria-pressed="${on}">${on ? 'Seguindo' : 'Seguir'}</button></div>
+    ${c.name ? crest(c, 128) : ''}<h1>${esc(c.name)}</h1></header>`;
   if (!t) return head + '<div class="skeleton"></div><div class="skeleton"></div>';
   const tenis = c.sportId === 3;
   const camps = tenis ? [] : timeCampsAtivos(t);
@@ -1098,8 +1141,9 @@ function renderLeague(id) {
   const L = R.league && R.league.id === id ? R.league : null;
   const comp = L ? L.comp : (LEAGUES.find((l) => l.id === id) || { id, name: '' });
   const on = isComp(id);
-  const head = `<header class="top" style="justify-content:flex-start">${backBtn()}${comp.name ? leagueImg(comp) : ''}<h1 style="font-size:20px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(comp.name)}</h1>
-    <button class="follow ${on ? 'on' : ''}" data-act="followcomp" data-id="${id}" aria-pressed="${on}">${on ? 'Seguindo' : 'Seguir'}</button></header>`;
+  const head = `<header class="capa capa-liga"><div class="capa-bar">${backBtn()}<span style="flex:1"></span>
+    <button class="follow ${on ? 'on' : ''}" data-act="followcomp" data-id="${id}" aria-pressed="${on}">${on ? 'Seguindo' : 'Seguir'}</button></div>
+    ${comp.name ? leagueImg(comp) : ''}<h1>${esc(comp.name)}</h1></header>`;
   if (!L) return head + '<div class="skeleton"></div><div class="skeleton"></div>';
   const by = (a, b) => new Date(a.startTime) - new Date(b.startTime);
   const live = L.games.filter((g) => g.statusGroup === 3);
@@ -1115,7 +1159,7 @@ function renderLeague(id) {
   const podeTabela = temTabela || !L.st;
   if (!podeTabela) return `${head}${jogos || '<div class="empty">Sem jogos nem tabela no momento.</div>'}`;
   const cur = (R.ligaTab || {})[id] || (jogos ? 'jogos' : 'tab');
-  const tabs = `<div class="tabs liga-tabs" role="tablist">${[['jogos', 'Jogos'], ['tab', 'Tabela']].map(([k, t]) => `<button class="tab" role="tab" data-act="ligatab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div>`;
+  const tabs = `<div class="tabs liga-tabs"><div class="seg" role="tablist">${[['jogos', 'Jogos'], ['tab', 'Tabela']].map(([k, t]) => `<button class="tab" role="tab" data-act="ligatab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div></div>`;
   const corpo = cur === 'tab'
     ? (tabela || '<div class="empty">Não consegui carregar a tabela agora. Tento de novo sozinho.</div>')
     : (jogos || '<div class="empty">Sem jogos no momento.</div>');
@@ -1317,15 +1361,15 @@ function renderGame(id) {
     : tennis ? tennisCenter(g, live)
     : `<div class="big tn">${num(h.score)} - ${num(a.score)}</div><small class="${live ? 'on relogio-grande' : ''}">${live ? spanRelogio(g.id, liveLabel(g)) : esc(g.statusText)}</small>${(g.stages || []).filter((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`) && x.homeCompetitorScore >= 0).map((x) => `<small class="tn">Pênaltis ${num(x.homeCompetitorScore)} - ${num(x.awayCompetitorScore)}</small>`).join('')}`;
   const penStage = (g.stages || []).find((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`));
-  const scorers = (cid) => (g.events || []).filter((e) => e.eventType.id === 1 && e.competitorId === cid && !(penStage && e.stageId === penStage.id)).map((e) => `${esc(playerName(g, e.playerId))} ${esc(e.gameTimeDisplay || '')}`).join('<br>');
+  const scorers = (cid) => golsDoJogo(g).filter((e) => e.competitorId === cid).map((e) => `<span>${esc(rotuloGol(g, e))}</span>`).join('');
   const teamLink = (c) => {
     const tag = c.id ? `a class="d-team" href="#/time/${Number(c.id)}"` : 'div class="d-team"';
-    return `<${tag}><img class="${tennis ? 'round' : ''}" alt="" width="56" height="56" data-mono="${esc(initials(c.name))}" src="${esc(c.logo || imgUrl('Competitors', c.id, c.imageVersion, 96))}"><span>${esc(c.shortName || c.name)}${c.rankings && c.rankings[0] ? `<br><small class="muted tn" style="font-weight:500">${esc(c.rankings[0].name)} ${c.rankings[0].position}</small>` : ''}</span></${c.id ? 'a' : 'div'}>`;
+    return `<${tag}><img class="${tennis ? 'round' : ''}" alt="" width="76" height="76" data-mono="${esc(initials(c.name))}" src="${esc(c.logo || imgUrl('Competitors', c.id, c.imageVersion, 96))}"><span>${esc(c.shortName || c.name)}${c.rankings && c.rankings[0] ? `<br><small class="muted tn" style="font-weight:500">${esc(c.rankings[0].name)} ${c.rankings[0].position}</small>` : ''}</span></${c.id ? 'a' : 'div'}>`;
   };
   const tabsDef = tennis ? [['jogo', 'Jogo']] : [['jogo', 'Jogo'], ['num', 'Números'], ['esc', 'Escalações'], ...(g.hasStandings ? [['tab', 'Tabela']] : [])];
   const cur = R.gameTab[id] || 'jogo';
-  const tabs = tabsDef.length > 1 ? `<div class="tabs" role="tablist">${tabsDef.map(([k, t]) => `<button class="tab" role="tab" data-act="gtab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div>` : '';
-  const showScorers = !tennis && !spoil && cur !== 'jogo';
+  const tabs = tabsDef.length > 1 ? `<div class="tabs"><div class="seg" role="tablist">${tabsDef.map(([k, t]) => `<button class="tab" role="tab" data-act="gtab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div></div>` : '';
+  const showScorers = !tennis && !spoil && !soon;
   const hs = showScorers ? scorers(h.id) : '', as = showScorers ? scorers(a.id) : '';
   let body;
   if (tennis) body = tabTennis(g, id, spoil);
@@ -1336,9 +1380,18 @@ function renderGame(id) {
   else body = tabGame(g, spoil);
   return `<div class="d-head" style="--c1:${colorOf(h.color)};--c2:${colorOf(a.color)}">${bar(esc(g.competitionDisplayName || ''))}
       <div class="d-score">${teamLink(h)}<div class="d-center">${center}</div>${teamLink(a)}</div>
-      ${hs || as ? `<div class="d-scorers"><div>${hs}</div><div>${as}</div></div>` : ''}
+      ${hs || as ? `<div class="d-scorers"><div>${hs}</div><i aria-hidden="true">${ICONS.goal}</i><div>${as}</div></div>` : ''}
       ${botaoAcompanhar(g, id)}
-    </div>${tabs}<div class="d-body" role="tabpanel">${body}</div>`;
+    </div>${tabs}<div class="d-body" role="tabpanel" style="${coresBarras(h, a)}">${body}</div>`;
+}
+// Barras e grafico nas cores dos times; cores parecidas (dois vermelhos) voltam ao laranja e azul de sempre.
+function coresBarras(h, a) {
+  if (h.sportId === 3 || !h.color || !a.color) return '';
+  const c1 = colorOf(h.color), c2 = colorOf(a.color);
+  const rgb = (c) => { const n = parseInt(c.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+  const [p, q] = [rgb(c1), rgb(c2)];
+  const dist = Math.sqrt((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2);
+  return dist < 140 || c1 === '#7D8891' || c2 === '#7D8891' ? '' : `--home:${c1};--away:${c2}`;
 }
 function tennisCenter(g, live) {
   const cur = live && (g.stages || []).find((x) => /^S\d/.test(x.shortName || '') && x.isLive);
@@ -1433,32 +1486,42 @@ function tabGame(g, spoil) {
   if (spoil) return spoilNote(g.id) + '<div style="height:12px"></div>' + info;
   const events = (g.events || []).filter((e) => e.eventType);
   if (!events.length) return (g.statusGroup === 2 ? '' : painelAgora(g, R.stats[g.id])) + info + (g.statusGroup === 2 ? '' : '<div style="height:12px"></div><div class="empty">Sem lances registrados ainda.</div>');
-  const hid = g.homeCompetitor.id;
+  const h0 = g.homeCompetitor, a0 = g.awayCompetitor;
+  const pen = (g.stages || []).find((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`));
+  const placar = [0, 0];
   const row = (e) => {
-    const home = e.competitorId === hid;
+    const home = e.competitorId === h0.id;
     const tp = e.eventType.id;
+    const gol = tp === 1 && !(pen && e.stageId === pen.id);
+    if (gol) placar[home ? 0 : 1]++;
     const icon = tp === 1 ? ICONS.goal : tp === 2 ? '<i class="ic-card ic-y" aria-label="Cartão amarelo"></i>' : tp === 3 ? '<i class="ic-card ic-r" aria-label="Cartão vermelho"></i>' : tp === 1000 ? ICONS.sub : '<i class="ic-card" style="background:var(--muted);height:10px;border-radius:50%" aria-hidden="true"></i>';
     const nm = playerName(g, e.playerId);
     const extra = (e.extraPlayers || []).map((p) => playerName(g, p)).filter(Boolean)[0];
-    const sub = tp === 1000 && extra ? `<span class="tl-sub">sai ${esc(extra)}</span>` : tp === 1 && extra ? `<span class="tl-sub">assist. ${esc(extra)}</span>` : '';
     const label = e.eventType.subTypeName || '';
-    const kind = tp === 1 && /contra|p[eê]n/i.test(label) ? `<span class="tl-sub">${esc(label)}</span>` : tp !== 1 && tp !== 2 && tp !== 3 && tp !== 1000 ? `<span class="tl-sub">${esc(e.eventType.name || '')}</span>` : '';
-    const who = `<span class="tl-who" ${home ? 'style="flex-direction:row-reverse"' : ''}>${icon}<span>${tp === 1 ? `<b>${esc(nm)}</b>` : esc(nm)}${sub}${kind}</span></span>`;
-    return `<div class="tl-row"><div class="tl-l">${home ? who : ''}</div><div class="tl-min tn">${esc(e.gameTimeDisplay || '')}</div><div class="tl-r">${home ? '' : who}</div></div>`;
+    const oque = tp === 1 ? (/contra/i.test(label) ? 'Gol contra' : /p[eê]n/i.test(label) ? 'Gol de pênalti' : 'Gol') : tp === 2 ? 'Amarelo' : tp === 3 ? 'Vermelho' : tp === 1000 ? 'Substituição' : (e.eventType.name || 'Lance');
+    const sub = tp === 1000 && extra ? `entra ${esc(nm)}, sai ${esc(extra)}` : tp === 1 && extra ? `${esc(nm)} · assist. ${esc(extra)}` : esc(nm);
+    const time = home ? h0 : a0;
+    return `<div class="lance-l ${gol ? 'gol' : ''}" style="--ct:${colorOf(time.color)}">
+      <span class="lm tn">${esc(e.gameTimeDisplay || '')}</span>
+      ${crest(time)}
+      <span class="li">${icon}</span>
+      <span class="lt"><b>${esc(oque)}</b>${sub ? `<small>${sub}</small>` : ''}</span>
+      ${gol ? `<span class="lp tn">${placar[0]}<i>-</i>${placar[1]}</span>` : ''}
+    </div>`;
   };
   const seq = [];
   let cur = null;
   const stages = g.stages || [];
   events.forEach((e) => {
     if (cur !== null && e.stageId !== cur) {
-      const st = stages.find((s) => s.id === cur);
+      const st = stages.find((x) => x.id === cur);
       if (st && st.isEnded) seq.push(`<div class="tl-sep"><span class="tn">${esc(st.shortName || st.name)} ${num(st.homeCompetitorScore)} - ${num(st.awayCompetitorScore)}</span></div>`);
     }
     cur = e.stageId;
     seq.push(row(e));
   });
   const ordered = g.statusGroup === 3 ? seq.reverse() : seq;
-  return `${g.statusGroup === 2 ? '' : painelAgora(g, R.stats[g.id])}${pulseChart(g)}<div class="tl">${ordered.join('')}</div><div style="height:14px"></div>${info}`;
+  return `${g.statusGroup === 2 ? '' : painelAgora(g, R.stats[g.id])}${pulseChart(g)}<div class="sec" style="margin-top:6px"><h2>Lances</h2></div><div class="lances">${ordered.join('')}</div><div style="height:14px"></div>${info}`;
 }
 function statPair(rowH, rowA) {
   const val = (r) => {

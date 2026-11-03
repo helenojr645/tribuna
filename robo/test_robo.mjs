@@ -145,6 +145,40 @@ t('placar chega antes do lance: um aviso so', () => {
   assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!'], 'gol seguinte avisa');
 });
 
+t('autor chega depois do gol: atualiza o mesmo aviso com quem fez, uma vez so', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [{ id: 9, athleteId: 9, shortName: 'Pedro' }], stages: [] }; w.tick(); w.next();
+  score(g, 1, 0);
+  const m1 = w.tick();
+  assert.deepEqual(titles(m1), ['GOL do Flamengo!']);
+  w.next(); w.details[7].events = [goal(1, 20, 9)];
+  const m2 = w.tick();
+  assert.deepEqual(titles(m2), ["Gol de Pedro 20'"], 'nome chegou');
+  assert.equal(m2[0].tag, m1[0].tag, 'troca o aviso anterior, nao empilha');
+  assert.ok(m2[0].body.includes('1 x 0') && m2[0].body.includes('Flamengo'), m2[0].body);
+  w.next(); assert.deepEqual(w.tick(), [], 'nao repete');
+  w.next(); score(g, 1, 1); w.details[7].events.push(goal(2, 40, 9));
+  assert.deepEqual(titles(w.tick()), ['GOL do Grêmio!'], 'gol com autor na hora segue igual');
+});
+
+t('autor atrasado: dois gols sem nome, lances fora de ordem e lance que chega primeiro sem jogador', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [{ id: 9, athleteId: 9, shortName: 'Pedro' }, { id: 10, athleteId: 10, shortName: 'Bruno' }], stages: [] }; w.tick(); w.next();
+  score(g, 2, 0);
+  const m1 = w.tick();
+  assert.deepEqual(titles(m1), ['GOL do Flamengo!', 'GOL do Flamengo!']);
+  w.next(); w.details[7].events = [goal(1, 30, 10)];
+  const m2 = w.tick();
+  assert.deepEqual(titles(m2), ["Gol de Bruno 30'"]);
+  assert.equal(m2[0].tag, m1[0].tag, 'por ora e o 1o gol conhecido');
+  w.next(); w.details[7].events = [goal(1, 20, 0), goal(1, 30, 10)];
+  assert.deepEqual(w.tick(), [], 'lance sem jogador espera');
+  w.next(); w.details[7].events = [goal(1, 20, 9), goal(1, 30, 10)];
+  const m3 = w.tick();
+  assert.deepEqual(titles(m3), ["Gol de Pedro 20'"], 'nome chega depois e ainda avisa');
+  w.next(); assert.deepEqual(w.tick(), [], 'nada repete');
+});
+
 t('lance chega antes do placar: espera e avisa com numero certo', () => {
   const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g]; w.tick(); w.next();
   w.details[7] = { events: [goal(1, 20, 9)], members: [], stages: [] };
@@ -416,6 +450,19 @@ const statsDe = (posse, gol, chutes, esc) => [
   ['Posse de Bola', posse], ['Chutes no gol', gol], ['Total de chutes', chutes], ['Escanteios', esc]
 ].flatMap(([name, v]) => [{ name, competitorId: 1, value: String(v[0]) }, { name, competitorId: 2, value: String(v[1]) }]);
 const acompanhar = (w, m, g, extra) => w.register({ follows: { c: [], comp: [], f1: false, mute: [] }, watch: [{ g: 7, c: [1, 2], m: m || 'main', t: new Date(g.startTime).getTime() }], ...(extra || {}) });
+
+t('cartao: autor atrasado atualiza o cartao de quem acompanha', () => {
+  const w = world(); const g = foot({ statusGroup: 3, gameTime: 60, gameTimeDisplay: "60'" }); score(g, 0, 0); w.games = [g];
+  acompanhar(w, 'main', g);
+  w.details[7] = { events: [], members: [{ id: 9, athleteId: 9, shortName: 'Pedro' }], stages: [] };
+  w.tick(); w.next(); score(g, 1, 0);
+  let m = w.tick();
+  assert.equal(m.length, 1); assert.equal(m[0].tag, 'live7');
+  w.next(); w.details[7].events = [goal(1, 61, 9)];
+  m = w.tick();
+  assert.equal(m.length, 1, 'um cartao');
+  assert.ok(m[0].body.startsWith("GOL! Pedro 61'"), m[0].body);
+});
 
 t('cartao: primeiro resumo, gol atualiza o mesmo cartao, amarelo so no modo completo', () => {
   const w = world(); const g = foot({ statusGroup: 3, gameTime: 60, gameTimeDisplay: "60'" }); score(g, 0, 0); w.games = [g];

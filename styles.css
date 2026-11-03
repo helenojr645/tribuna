@@ -1,21 +1,22 @@
 :root {
   color-scheme: dark;
-  --bg: #0E1113;
-  --surface: #171B1F;
-  --surface-2: #20262B;
-  --line: #2A3137;
-  --ink: #F3F5F2;
-  --ink-2: #C3CAD0;
-  --muted: #98A2AA;
+  --bg: #000000;
+  --surface: #1C1C1E;
+  --surface-2: #2C2C2E;
+  --line: #2E2E32;
+  --ink: #FFFFFF;
+  --ink-2: #D1D1D6;
+  --muted: #98989F;
   --volt: #D4F53C;
   --volt-ink: #12150A;
   --danger: #FF8A7A;
   --home: #C9762C;
   --away: #3F8FC7;
-  --r: 16px;
+  --r: 20px;
   --safe-t: env(safe-area-inset-top, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-d: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", Roboto, system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -44,7 +45,7 @@ img { display: block; }
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
   display: grid; grid-template-columns: repeat(4, 1fr);
   padding: 6px 8px calc(var(--safe-b) + 6px);
-  background: rgba(14, 17, 19, .92); border-top: 1px solid var(--line);
+  background: rgba(10, 10, 12, .78); border-top: .5px solid var(--line);
   -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
 }
 .nav-brand { display: none; }
@@ -117,7 +118,6 @@ img { display: block; }
 .card:active { background: var(--surface-2); }
 @media (hover: hover) { .card:hover { background: var(--surface-2); } }
 .card.selected { border-color: var(--volt); }
-.card .stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: linear-gradient(var(--c1) 50%, var(--c2) 50%); }
 .card.live { background: #1B2118; }
 .meta { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
 .meta span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -483,3 +483,116 @@ body { overflow-x: clip; }
 }
 @keyframes so-fade { from { opacity: 0; } }
 @keyframes so-sai { to { opacity: 0; } }
+
+/* ---------- Visual inspirado no Apple Sports (03/11/2026) ----------
+   Fundo preto, cartoes cinza arredondados, escudos e placar grandes, cor dos times so onde informa. */
+.top h1 { font: 800 34px/1.1 var(--font-d); letter-spacing: -.025em; }
+.hero { font-size: 18px; color: var(--ink-2); }
+.sec { margin: 26px 0 10px; }
+.sec h2 { font: 700 21px/1.2 var(--font-d); letter-spacing: -.02em; text-transform: none; color: var(--ink); }
+.sec .sec-link { font-size: 15px; color: var(--volt); font-weight: 600; }
+.subhead { font: 700 19px/1.2 var(--font-d); letter-spacing: -.02em; text-transform: none; color: var(--ink); }
+.chip { border: 0; background: var(--surface); min-height: 36px; border-radius: 18px; font-size: 15px; }
+.chips { margin-bottom: 6px; }
+
+/* Cartao de jogo */
+.stack { gap: 10px; }
+.card { padding: 12px 16px 14px; border: 0; }
+.card.selected { box-shadow: inset 0 0 0 2px var(--volt); }
+.card.live { background: linear-gradient(100deg, color-mix(in srgb, var(--c1) 22%, var(--surface)) 0%, var(--surface) 46%, var(--surface) 54%, color-mix(in srgb, var(--c2) 22%, var(--surface)) 100%); }
+.meta { font-size: 13px; margin-bottom: 6px; }
+.status { color: var(--ink-2); }
+.row { gap: 12px; min-height: 42px; }
+.row .crest, .row .mono { width: 30px; height: 30px; }
+.row .name { display: flex; flex-direction: column; justify-content: center; white-space: normal; overflow: hidden; }
+.row .name .nm { font-size: 17px; font-weight: 700; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .pts { font: 800 30px/1 var(--font-d); min-width: 34px; letter-spacing: -.02em; }
+.row.lose .pts { color: var(--muted); font-weight: 600; }
+.row.lose .name .nm { color: var(--muted); font-weight: 600; }
+.autores { display: block; margin-top: 1px; font-size: 12.5px; font-weight: 500; color: var(--muted); line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.autores .ic-goal { width: 12px; height: 12px; vertical-align: -2px; margin-right: 4px; color: var(--muted); }
+.forma { margin-top: 12px; }
+.row.scored .autores, .row.scored .autores .ic-goal { color: var(--volt); }
+.when { top: 36px; right: 16px; }
+.when b { font: 800 24px/1.1 var(--font-d); }
+.linha-num { padding-left: 42px; color: var(--muted); }
+.acomp, .f1card, .line-item, .list, .panel, .viz, .painel-agora, .set-group, .empty, .grid-set { border: 0; border-radius: var(--r); }
+.item { border-bottom: .5px solid var(--line); }
+.meu { border: 0; border-radius: 18px; }
+
+/* Pagina do jogo: as cores dos dois times no topo */
+.d-head {
+  position: relative; padding-bottom: 20px;
+  background:
+    linear-gradient(180deg, transparent 0%, transparent 35%, var(--bg) 100%),
+    linear-gradient(90deg, color-mix(in srgb, var(--c1) 62%, #000) 0%, color-mix(in srgb, var(--c1) 40%, #000) 40%, color-mix(in srgb, var(--c2) 40%, #000) 60%, color-mix(in srgb, var(--c2) 62%, #000) 100%);
+}
+.d-comp { color: rgba(255, 255, 255, .85); font-weight: 600; }
+.d-score { align-items: center; margin-top: 10px; }
+.d-team { font-size: 16px; gap: 10px; }
+.d-team img, .d-team .mono { width: 76px; height: 76px; filter: drop-shadow(0 4px 14px rgba(0, 0, 0, .35)); }
+.d-center { min-width: 120px; }
+.d-center .big { font: 800 60px/1 var(--font-d); letter-spacing: -.03em; text-shadow: 0 2px 18px rgba(0, 0, 0, .3); }
+.d-center small { margin-top: 8px; color: rgba(255, 255, 255, .85); }
+.d-center small.on { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 14px; background: rgba(0, 0, 0, .38); color: var(--volt); }
+.d-scorers { grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: start; margin-top: 16px; font-size: 13.5px; font-weight: 600; color: rgba(255, 255, 255, .9); }
+.d-scorers > div { display: flex; flex-direction: column; gap: 3px; }
+.d-scorers > div:first-child { text-align: right; align-items: flex-end; }
+.d-scorers > div:last-child { text-align: left; align-items: flex-start; }
+.d-scorers > i { color: rgba(255, 255, 255, .7); padding-top: 1px; }
+.d-scorers > i .ic-goal { width: 15px; height: 15px; color: inherit; }
+.watch-btn { background: rgba(0, 0, 0, .32); }
+
+/* Abas em controle segmentado */
+.tabs { border-bottom: 0; padding: 8px 16px; background: rgba(0, 0, 0, .86); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+.seg { display: flex; flex: 1; gap: 2px; padding: 2px; border-radius: 10px; background: #1F1F22; min-width: max-content; }
+.seg .tab { flex: 1; min-height: 34px; padding: 0 12px; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--ink-2); }
+.seg .tab[aria-selected="true"] { background: #5A5A5F; color: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, .3); }
+.liga-tabs { margin: 0 -16px 4px; padding: 8px 16px; }
+@media (min-width: 1000px) { .liga-tabs { margin: 0 -24px 4px; padding: 8px 24px; } }
+
+/* Lances */
+.lances { background: var(--surface); border-radius: var(--r); padding: 4px 0; overflow: hidden; }
+.lance-l { display: grid; grid-template-columns: 40px 22px 18px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 52px; padding: 6px 16px 6px 10px; border-bottom: .5px solid var(--line); }
+.lance-l:last-child { border-bottom: 0; }
+.lance-l .lm { font-weight: 700; font-size: 13.5px; color: var(--ink-2); text-align: right; }
+.lance-l .crest { width: 22px; height: 22px; }
+.lance-l .li { display: grid; place-items: center; }
+.lance-l .lt { min-width: 0; display: flex; flex-direction: column; }
+.lance-l .lt b { font-weight: 600; font-size: 15px; }
+.lance-l .lt small { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lance-l.gol { background: linear-gradient(90deg, color-mix(in srgb, var(--ct) 30%, transparent), transparent 75%); }
+.lance-l.gol .lt b { font-weight: 800; font-size: 16px; }
+.lance-l.gol .lt small { color: var(--ink); font-weight: 600; }
+.lance-l .lp { font: 800 20px/1 var(--font-d); letter-spacing: -.01em; }
+.lance-l .lp i { font-style: normal; color: var(--muted); margin: 0 3px; }
+.lances .tl-sep { margin: 0; padding: 8px 0; border-bottom: .5px solid var(--line); }
+
+/* Tabela num cartao */
+.table { border-collapse: separate; border-spacing: 0; background: var(--surface); border-radius: var(--r); overflow: hidden; }
+.table th { padding: 10px 6px 6px; font-size: 12px; }
+.table td { border-top: .5px solid var(--line); padding: 2px 6px; }
+.table th:first-child, .table td:first-child { padding-left: 10px; }
+.table th:last-child, .table td:last-child { padding-right: 14px; }
+.table tr.me td { background: color-mix(in srgb, var(--volt) 13%, var(--surface)); }
+.table .crest { width: 22px; height: 22px; }
+
+/* Topo do time e do campeonato */
+.capa { margin: calc(-12px - var(--safe-t)) -16px 10px; padding: calc(var(--safe-t) + 8px) 16px 18px; display: flex; flex-direction: column; align-items: center; text-align: center;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c1) 55%, #000) 0%, color-mix(in srgb, var(--c1) 22%, #000) 55%, var(--bg) 100%); }
+.capa-liga { --c1: #3A3A3C; }
+.capa-bar { display: flex; align-items: center; gap: 4px; width: 100%; min-height: 44px; margin-bottom: 4px; }
+.capa-bar .icon-btn { color: #fff; }
+.capa > .crest, .capa > img { width: 84px; height: 84px; filter: drop-shadow(0 6px 18px rgba(0, 0, 0, .4)); }
+.capa > .mono { width: 84px; height: 84px; font-size: 26px; }
+.capa h1 { margin-top: 12px; font: 800 28px/1.1 var(--font-d); letter-spacing: -.025em; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.capa .follow:not(.on) { background: rgba(255, 255, 255, .16); }
+@media (min-width: 1000px) { .capa { margin: -20px -24px 12px; padding: 12px 24px 22px; } }
+@media (hover: hover) { .card.live:hover { filter: brightness(1.15); } }
+/* Modo telao precisa vir depois do visual novo para valer. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .d-center .big { font-size: clamp(72px, 34dvh, 150px); }
+  .d-team { font-size: 20px; }
+  .d-team img, .d-team .mono { width: 96px; height: 96px; }
+  .d-scorers { display: none; }
+}

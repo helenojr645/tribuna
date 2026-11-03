@@ -706,6 +706,8 @@ function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
       card: prev ? prev.card : 0, last: prev ? prev.last : '',
       t: t
     };
+    // Gols avisados sem autor, esperando o nome sair na fonte (tags dos avisos).
+    if (prev && prev.pa && prev.pa.length && g.statusGroup === 3) cur.pa = prev.pa.slice(-4);
     var events = [];
     // Jogo ja em andamento na primeira leitura, ou leitura apos parada: so registra, sem disparar o passado.
     var baseline = g.statusGroup !== 2 && (!prev || stale);
@@ -747,7 +749,7 @@ function enviarCartoes_(g, cur, prev, events, devices, out, now) {
     var w = watchDe_(d, g, now);
     if (!w) {
       events.forEach(function (ev) {
-        if (wants_(d, g, ev.rule, now)) out.push({ dev: d, msg: { title: ev.title, body: ev.body, tag: ev.tag || ('j' + g.id), url: '#/jogo/' + g.id } });
+        if (wants_(d, g, ev.rule, now)) out.push({ dev: d, msg: { title: ev.title, body: ev.body, tag: ev.tag || ('j' + g.id), url: '#/jogo/' + g.id, troca: ev.troca || undefined } });
       });
       return;
     }
@@ -942,7 +944,7 @@ function detailEvents_(game) {
       k: e.eventType.id + ':' + e.competitorId + ':' + e.gameTime + ':' + (e.playerId || 0),
       type: e.eventType.id, typeName: e.eventType.name || '', name: nome(e.playerId),
       out: (e.extraPlayers || []).map(nome).filter(Boolean)[0] || '',
-      min: e.gameTimeDisplay || '', comp: e.competitorId
+      min: e.gameTimeDisplay || '', comp: e.competitorId, gt: Number(e.gameTime) || 0
     };
   });
 }
@@ -989,8 +991,27 @@ function footballEvents_(g, prev, cur, events, now, t) {
         var counted = seen.filter(function (k) { return k.indexOf('1:' + e.comp + ':') === 0; }).length;
         // Lance chegou antes do placar: espera o placar para nao avisar com numero velho.
         if (counted >= score) return;
-        // Placar ja avisado sem autor: o lance so completa a memoria, sem repetir o aviso.
-        if (score <= told) { seen.push(e.k); return; }
+        // Placar ja avisado sem autor: quando o nome chega, atualiza o mesmo aviso (mesma tag) com quem fez.
+        if (score <= told) {
+          var pend = cur.pa || [];
+          var pref = 'j' + g.id + (home ? 'gh' : 'ga');
+          var esperando = pend.some(function (x) { return x.indexOf(pref) === 0; });
+          // Lance ainda sem nome e ha gol esperando autor: nao marca como visto, para o nome poder chegar depois.
+          if (!e.name && esperando) return;
+          seen.push(e.k);
+          // Qual gol deste time e (1o, 2o...) pela ordem do minuto, nao pela ordem em que o lance chegou.
+          var ordem = 1;
+          det.forEach(function (o) { if (o !== e && o.type === 1 && o.comp === e.comp && (o.gt < e.gt || (o.gt === e.gt && det.indexOf(o) < det.indexOf(e)))) ordem++; });
+          var tagSem = pref + ordem;
+          // Se esse ja foi completado, o nome vai para o gol deste time que ainda espera autor.
+          if (pend.indexOf(tagSem) < 0) tagSem = pend.filter(function (x) { return x.indexOf(pref) === 0; })[0] || tagSem;
+          if (e.name && pend.indexOf(tagSem) >= 0) {
+            cur.pa = pend.filter(function (x) { return x !== tagSem; });
+            if (!cur.pa.length) delete cur.pa;
+            events.push({ rule: 'goal', title: 'Gol de ' + e.name + (e.min ? ' ' + e.min : ''), head: cabecaEvento_(g, e), body: scoreLine_(g) + ' · ' + shortName_(side), tag: tagSem, troca: true });
+          }
+          return;
+        }
         seen.push(e.k);
         if (home) cur.gh++; else cur.ga++;
         events.push({ rule: 'goal', title: 'GOL do ' + shortName_(side) + '!', head: cabecaEvento_(g, e), body: scoreLine_(g) + (e.name ? ' · ' + e.name : '') + (e.min ? ' ' + e.min : ''), tag: 'j' + g.id + 'g' + e.k });
@@ -1008,10 +1029,12 @@ function footballEvents_(g, prev, cur, events, now, t) {
     while (cur.h > cur.gh) {
       cur.gh++;
       events.push({ rule: 'goal', title: 'GOL do ' + shortName_(g.homeCompetitor) + '!', body: scoreLine_(g), tag: 'j' + g.id + 'gh' + cur.gh });
+      if (!g._alt) cur.pa = (cur.pa || []).concat(['j' + g.id + 'gh' + cur.gh]).slice(-4);
     }
     while (cur.a > cur.ga) {
       cur.ga++;
       events.push({ rule: 'goal', title: 'GOL do ' + shortName_(g.awayCompetitor) + '!', body: scoreLine_(g), tag: 'j' + g.id + 'ga' + cur.ga });
+      if (!g._alt) cur.pa = (cur.pa || []).concat(['j' + g.id + 'ga' + cur.ga]).slice(-4);
     }
   }
   if (prev && prev.st !== cur.st && /intervalo/i.test(cur.st)) events.push({ rule: 'ht', title: 'Intervalo', body: scoreLine_(g), tag: 'j' + g.id });

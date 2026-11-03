@@ -1,5 +1,5 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
-const VERSION = 'tribuna-14';
+const VERSION = 'tribuna-15';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'fontes.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
 const IMG_CACHE = 'tribuna-img';
 
@@ -48,7 +48,8 @@ self.addEventListener('push', (e) => {
   try { m = e.data ? e.data.json() : {}; } catch (_) {}
   e.waitUntil((async () => {
     // Cartao ao vivo: fecha o anterior antes, porque a troca por tag nao e confiavel em todo iOS.
-    if (m.live && m.tag) {
+    // Autor do gol que chegou depois: troca o aviso "GOL do time" em vez de empilhar.
+    if ((m.live || m.troca) && m.tag) {
       // Se falhar, segue: o iPhone penaliza push sem notificacao visivel.
       try {
         const antigos = await self.registration.getNotifications({ tag: m.tag });

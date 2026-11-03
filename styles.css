@@ -596,3 +596,5 @@ body { overflow-x: clip; }
   .d-team img, .d-team .mono { width: 96px; height: 96px; }
   .d-scorers { display: none; }
 }
+.legenda-auto { font-size: 13px; margin: 8px 2px 0; line-height: 1.5; }
+.legenda-auto svg { width: 15px; height: 15px; vertical-align: -3px; }

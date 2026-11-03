@@ -464,6 +464,49 @@ t('cartao: autor atrasado atualiza o cartao de quem acompanha', () => {
   assert.ok(m[0].body.startsWith("GOL! Pedro 61'"), m[0].body);
 });
 
+t('cartao automatico do time seguido: abre no apito, gol atualiza, fim encerra sem tocar em Acompanhar', () => {
+  const w = world(); w.register({ auto: { c: [1], comp: [] } });
+  const g = foot(); w.games = [g];
+  w.details[7] = { events: [], members: [{ id: 9, athleteId: 9, shortName: 'Pedro' }], stages: [] };
+  assert.deepEqual(w.tick(), [], 'antes do jogo: nada');
+  w.next(31); g.statusGroup = 3; g.statusText = '1º tempo'; score(g, 0, 0);
+  let m = w.tick();
+  assert.equal(m.length, 1, 'um cartao, nao aviso solto'); assert.equal(m[0].tag, 'live7'); assert.equal(m[0].live, true);
+  w.next(); assert.deepEqual(w.tick(), [], 'sem lance nao toca');
+  w.next(); score(g, 1, 0); w.details[7].events = [goal(1, 5, 9)];
+  m = w.tick();
+  assert.equal(m.length, 1); assert.equal(m[0].tag, 'live7');
+  assert.ok(m[0].body.startsWith("GOL! Pedro 5'"), m[0].body);
+  w.next(); g.statusGroup = 4; g.statusText = 'Fim';
+  m = w.tick();
+  assert.equal(m.length, 1); assert.equal(m[0].fim, true, 'cartao final');
+  w.next(); assert.deepEqual(w.tick(), [], 'depois do fim nada');
+  w.next(30); assert.deepEqual(w.tick(), [], 'nem meia hora depois');
+});
+
+t('cartao automatico do campeonato: jogo de times nao seguidos tambem abre', () => {
+  const w = world(); w.register({ follows: { c: [], comp: [], f1: false, drivers: [], mute: [] }, auto: { c: [], comp: [113] } });
+  const g = foot({ statusGroup: 3, statusText: '1º tempo' }); score(g, 0, 0); w.games = [g];
+  const m = w.tick();
+  assert.equal(m.length, 1, 'jogo ja em andamento: cartao sai no primeiro minuto'); assert.equal(m[0].tag, 'live7');
+});
+
+t('cartao automatico respeita silencio, sem spoiler e time silenciado; sem automatico segue o aviso normal', () => {
+  let w = world(); w.register({ auto: { c: [1], comp: [] }, quiet: { on: true, from: 11, to: 13 } });
+  let g = foot({ statusGroup: 3, statusText: '1º tempo' }); score(g, 0, 0); w.games = [g];
+  w.tick(); w.next(); score(g, 1, 0);
+  assert.deepEqual(w.tick(), [], 'horario silencioso');
+  w = world(); w.register({ auto: { c: [1], comp: [] }, follows: { c: [1], comp: [], f1: false, drivers: [], mute: [1] } });
+  g = foot({ statusGroup: 3, statusText: '1º tempo' }); score(g, 0, 0); w.games = [g];
+  assert.deepEqual(w.tick(), [], 'time silenciado');
+  w = world(); w.register({ auto: { c: [], comp: [] } });
+  g = foot({ statusGroup: 3, statusText: '1º tempo' }); score(g, 0, 0); w.games = [g];
+  w.tick(); w.next(); score(g, 1, 0);
+  const m = w.tick();
+  assert.deepEqual(titles(m), ['GOL do Flamengo!'], 'desligado: aviso de gol comum');
+  assert.ok(!m[0].live);
+});
+
 t('cartao: primeiro resumo, gol atualiza o mesmo cartao, amarelo so no modo completo', () => {
   const w = world(); const g = foot({ statusGroup: 3, gameTime: 60, gameTimeDisplay: "60'" }); score(g, 0, 0); w.games = [g];
   acompanhar(w, 'main', g);

@@ -165,6 +165,9 @@ function cleanPrefs_(req, d) {
     d.rules[k] = req.rules && typeof req.rules[k] === 'boolean' ? req.rules[k] : DEFAULT_RULES[k];
   });
   d.spoiler = !!req.spoiler;
+  // Cartao ao vivo automatico: times e campeonatos em que o cartao abre sozinho, sem tocar em Acompanhar.
+  var au = req.auto || {};
+  d.auto = { c: (au.c || []).map(Number).filter(isFinite).slice(0, 200), comp: (au.comp || []).map(Number).filter(isFinite).slice(0, 60) };
   var antes = {};
   (d.watch || []).forEach(function (w) { antes[w.g] = w; });
   var acabados = d.fim || [];
@@ -488,6 +491,7 @@ function followedIds_(devices) {
   devices.forEach(function (d) {
     (d.follows.c || []).forEach(function (x) { c[x] = 1; });
     (d.follows.comp || []).forEach(function (x) { comp[x] = 1; });
+    ((d.auto && d.auto.comp) || []).forEach(function (x) { comp[x] = 1; });
     (d.watch || []).forEach(function (w) {
       if (w.t && Date.now() > w.t + 10 * 3600000) return;
       w.c.forEach(function (x) { c[x] = 1; });
@@ -661,7 +665,13 @@ function buildPlan_(devices, now) {
   }
   // Uma Property guarda 9 KB: acompanhados e ao vivo ficam, o resto fica de fora so da reserva.
   var vigiados = {};
-  devices.forEach(function (d) { (d.watch || []).forEach(function (w) { vigiados[w.g] = 1; }); });
+  devices.forEach(function (d) {
+    (d.watch || []).forEach(function (w) { vigiados[w.g] = 1; });
+    var a = d.auto;
+    if (a) games.forEach(function (x) {
+      if (a.comp.indexOf(x.competitionId) >= 0 || a.c.indexOf(x.homeCompetitor.id) >= 0 || a.c.indexOf(x.awayCompetitor.id) >= 0) vigiados[x.id] = 1;
+    });
+  });
   var peso = function (x) { return (vigiados[x.id] ? 0 : 2) + (x.statusGroup === 3 ? 0 : 1); };
   games.sort(function (u, v) { return peso(u) - peso(v) || new Date(u.startTime) - new Date(v.startTime); });
   var plano = { at: now, starts: starts.slice(0, 80), live: live, f1Active: f1Active, games: games };
@@ -688,8 +698,22 @@ function setsWon_(g) {
   return s ? num_(s.homeCompetitorScore) + '-' + num_(s.awayCompetitorScore) : '';
 }
 
-function watchDe_(d, g, now) {
-  return (d.watch || []).filter(function (w) { return w.g === g.id && (!w.t || now < w.t + 10 * 3600000); })[0];
+function watchDe_(d, g, now, prev) {
+  var w = (d.watch || []).filter(function (x) { return x.g === g.id && (!x.t || now < x.t + 10 * 3600000); })[0];
+  if (w) return w;
+  return autoDe_(d, g, now, prev);
+}
+
+// Automatico vale do apito inicial ao cartao final; respeita silencio e sem spoiler (o pedido manual nao).
+function autoDe_(d, g, now, prev) {
+  var a = d.auto;
+  if (!a || (!a.c.length && !a.comp.length)) return null;
+  var vivo = g.statusGroup === 3 || (g.statusGroup === 4 && prev && prev.s === 3);
+  if (!vivo || d.spoiler || inQuiet_(d, now)) return null;
+  var mute = (d.follows && d.follows.mute) || [];
+  var time = [g.homeCompetitor.id, g.awayCompetitor.id].some(function (id) { return a.c.indexOf(id) >= 0 && mute.indexOf(id) < 0; });
+  var liga = a.comp.indexOf(g.competitionId) >= 0 && mute.indexOf(-g.competitionId) < 0;
+  return time || liga ? { g: g.id, m: 'main', auto: true } : null;
 }
 
 function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
@@ -746,7 +770,7 @@ function enviarCartoes_(g, cur, prev, events, devices, out, now) {
   var enviou = false;
   var acabou = g.statusGroup === 4;
   devices.forEach(function (d) {
-    var w = watchDe_(d, g, now);
+    var w = watchDe_(d, g, now, prev);
     if (!w) {
       events.forEach(function (ev) {
         if (wants_(d, g, ev.rule, now)) out.push({ dev: d, msg: { title: ev.title, body: ev.body, tag: ev.tag || ('j' + g.id), url: '#/jogo/' + g.id, troca: ev.troca || undefined } });
@@ -763,7 +787,7 @@ function enviarCartoes_(g, cur, prev, events, devices, out, now) {
     enviou = true;
     if (w.novo) { w.novo = false; d._mudou = true; }
     // Encerrada so depois da entrega, no fim do ciclo.
-    if (acabou) { d._tirar = (d._tirar || []).concat([g.id]); d._mudou = true; }
+    if (acabou && !w.auto) { d._tirar = (d._tirar || []).concat([g.id]); d._mudou = true; }
   });
   if (enviou) cur.card = now;
   return enviou;

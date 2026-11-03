@@ -78,7 +78,10 @@ const S = Object.assign({
   quiet: { on: false, from: 23, to: 7 },
   device: null,
   filter: 'all',
-  watch: {}
+  watch: {},
+  // Cartao ao vivo automatico: todos os seus times (menos os desligados aqui) e os campeonatos marcados.
+  autoOff: [],
+  autoComps: []
 }, safeParse(localStorage.getItem(KEY)));
 S.rules = { ...DEFAULT_RULES, ...S.rules };
 S.watch = S.watch || {};
@@ -161,6 +164,15 @@ function dedupeGames(lists) {
 const isTeam = (id) => S.teams.some((t) => t.id === Number(id));
 const isComp = (id) => S.comps.some((t) => t.id === Number(id));
 const isMuted = (id) => S.mute.includes(Number(id));
+// id positivo = time, negativo = campeonato (como no silenciar).
+const isAuto = (id) => (id > 0 ? isTeam(id) && !S.autoOff.includes(id) : S.autoComps.includes(-id)) && !isMuted(id);
+function autoDoJogo(g) {
+  return isAuto(Number(g.homeCompetitor.id)) || isAuto(Number(g.awayCompetitor.id)) || isAuto(-Number(g.competitionId));
+}
+function botaoAuto(id, nome) {
+  const on = isAuto(id);
+  return `<button class="icon-btn auto ${on ? 'on' : ''}" data-act="auto" data-id="${id}" aria-pressed="${on}" aria-label="Cartão ao vivo automático: ${esc(nome)}">${ICON_WATCH}</button>`;
+}
 function toggleTeam(c) {
   const id = Number(c.id);
   if (isTeam(id)) { S.teams = S.teams.filter((t) => t.id !== id); S.mute = S.mute.filter((x) => x !== id); }
@@ -570,7 +582,8 @@ function botaoAcompanhar(g, id) {
   // Jogo visto so pela reserva nao tem id que o robo reconheca.
   if (id >= 7e8) return '';
   const on = !!S.watch[id];
-  return `<button class="watch-btn ${on ? 'on' : ''}" data-act="watchopen" data-id="${Number(id)}">${ICON_WATCH}<span>${on ? `Acompanhando · ${S.watch[id].m === 'all' ? 'tudo' : 'principais'}` : 'Acompanhar na tela de notificações'}</span></button>`;
+  const auto = !on && autoDoJogo(g);
+  return `<button class="watch-btn ${on || auto ? 'on' : ''}" data-act="watchopen" data-id="${Number(id)}">${ICON_WATCH}<span>${on ? `Acompanhando · ${S.watch[id].m === 'all' ? 'tudo' : 'principais'}` : auto ? 'Cartão automático · principais' : 'Acompanhar na tela de notificações'}</span></button>`;
 }
 function abrirFolha(id) {
   const d = R.game[id] || R.watchData[id];
@@ -1033,7 +1046,7 @@ function renderTeam(id) {
   const t = R.team && R.team.id === id ? R.team : null;
   const on = isTeam(id);
   const head = `<header class="capa" style="--c1:${colorOf(c.color)}"><div class="capa-bar">${backBtn()}<span style="flex:1"></span>
-    ${on ? `<button class="icon-btn ${isMuted(id) ? '' : 'on'}" data-act="mute" data-id="${id}" aria-pressed="${!isMuted(id)}" aria-label="Avisos deste">${isMuted(id) ? ICONS.bellOff : ICONS.bell}</button>` : ''}
+    ${on ? `<button class="icon-btn ${isMuted(id) ? '' : 'on'}" data-act="mute" data-id="${id}" aria-pressed="${!isMuted(id)}" aria-label="Avisos deste">${isMuted(id) ? ICONS.bellOff : ICONS.bell}</button>${botaoAuto(id, c.name)}` : ''}
     <button class="follow ${on ? 'on' : ''}" data-act="follow" data-id="${id}" aria-pressed="${on}">${on ? 'Seguindo' : 'Seguir'}</button></div>
     ${c.name ? crest(c, 128) : ''}<h1>${esc(c.name)}</h1></header>`;
   if (!t) return head + '<div class="skeleton"></div><div class="skeleton"></div>';
@@ -1142,6 +1155,7 @@ function renderLeague(id) {
   const comp = L ? L.comp : (LEAGUES.find((l) => l.id === id) || { id, name: '' });
   const on = isComp(id);
   const head = `<header class="capa capa-liga"><div class="capa-bar">${backBtn()}<span style="flex:1"></span>
+    ${botaoAuto(-id, comp.name)}
     <button class="follow ${on ? 'on' : ''}" data-act="followcomp" data-id="${id}" aria-pressed="${on}">${on ? 'Seguindo' : 'Seguir'}</button></div>
     ${comp.name ? leagueImg(comp) : ''}<h1>${esc(comp.name)}</h1></header>`;
   if (!L) return head + '<div class="skeleton"></div><div class="skeleton"></div>';
@@ -1618,7 +1632,8 @@ function followsPayload() {
       drivers: S.f1.drivers, mute: S.mute
     },
     rules: S.rules, spoiler: S.spoiler, quiet: S.quiet,
-    watch: Object.keys(S.watch).map((id) => ({ g: Number(id), c: S.watch[id].c, m: S.watch[id].m, t: S.watch[id].t }))
+    watch: Object.keys(S.watch).map((id) => ({ g: Number(id), c: S.watch[id].c, m: S.watch[id].m, t: S.watch[id].t })),
+    auto: { c: S.teams.map((t) => t.id).filter(isAuto), comp: S.autoComps.filter((id) => isAuto(-id)) }
   };
 }
 let testeConfirmado = false;
@@ -1677,6 +1692,8 @@ async function keepPushAlive() {
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(S.device.key) });
+    // Versao com cartao automatico: manda as preferencias uma vez para o robo conhecer.
+    if (!S.autoV) { S.autoV = 1; S.dirty = true; save(); }
     if (S.dirty) flushPrefs();
     if (sub.endpoint !== S.device.endpoint) {
       const r = await roboPost({ a: 'subscribe', id: S.device.id, secret: S.device.secret, sub: sub.toJSON(), ...followsPayload() });
@@ -1732,9 +1749,11 @@ function renderAjustes() {
   const follows = [
     ...S.teams.map((t) => `<div class="item">${crest({ ...t, imageVersion: t.iv })}<a class="grow" href="#/time/${t.id}"><div class="t1">${esc(t.name)}</div><div class="t2">${t.sportId === 3 ? 'Tênis' : 'Futebol'}</div></a>
        <button class="icon-btn ${isMuted(t.id) ? '' : 'on'}" data-act="mute" data-id="${t.id}" aria-pressed="${!isMuted(t.id)}" aria-label="Avisos de ${esc(t.name)}">${isMuted(t.id) ? ICONS.bellOff : ICONS.bell}</button>
+       ${botaoAuto(t.id, t.name)}
        <button class="icon-btn on" data-act="follow" data-id="${t.id}" aria-label="Deixar de seguir ${esc(t.name)}">${ICONS.starOn}</button></div>`),
     ...S.comps.map((c) => `<div class="item">${leagueImg(c)}<a class="grow" href="#/liga/${c.id}"><div class="t1">${esc(c.name)}</div><div class="t2">Campeonato inteiro</div></a>
        <button class="icon-btn ${isMuted(-c.id) ? '' : 'on'}" data-act="mute" data-id="${-c.id}" aria-pressed="${!isMuted(-c.id)}" aria-label="Avisos de ${esc(c.name)}">${isMuted(-c.id) ? ICONS.bellOff : ICONS.bell}</button>
+       ${botaoAuto(-c.id, c.name)}
        <button class="icon-btn on" data-act="followcomp" data-id="${c.id}" aria-label="Deixar de seguir ${esc(c.name)}">${ICONS.starOn}</button></div>`)
   ].join('');
   const opts = (v) => Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === v ? 'selected' : ''}>${String(h).padStart(2, '0')}h</option>`).join('');
@@ -1746,6 +1765,7 @@ function renderAjustes() {
     <div class="list">${follows || '<div class="item muted">Ninguém ainda.</div>'}
       <label class="sw"><span>Fórmula 1<small>Fim de semana no painel e avisos</small></span><input type="checkbox" role="switch" data-act="f1switch" ${S.f1.on ? 'checked' : ''}></label>
     </div>
+    <p class="muted legenda-auto">${ICONS.bell} avisos de gol, início e fim · <span class="ic-auto">${ICON_WATCH}</span> cartão ao vivo abre sozinho na tela de notificações quando o jogo começa (fica fora no horário silencioso e no modo sem spoiler)</p>
 
     ${Object.keys(S.watch).length ? `<div class="sec"><h2>Acompanhando agora</h2></div><div class="list">${Object.keys(S.watch).map((k) => {
       const id = Number(k);
@@ -2128,6 +2148,16 @@ const ACTIONS = {
     if (!c) return;
     toggleComp(c);
     if (R.mainRoute === '#/ajustes') main().innerHTML = renderAjustes(), loadRoboStatus(); else rerender();
+  },
+  auto(el) {
+    const id = Number(el.dataset.id);
+    if (id > 0) S.autoOff = isAuto(id) ? [...S.autoOff, id] : S.autoOff.filter((x) => x !== id);
+    else S.autoComps = isAuto(id) ? S.autoComps.filter((x) => x !== -id) : [...S.autoComps, -id];
+    // Ligar o cartao de algo silenciado religa os avisos dele.
+    if (isMuted(id) && (id > 0 ? !S.autoOff.includes(id) : S.autoComps.includes(-id))) S.mute = S.mute.filter((x) => x !== id);
+    save(); syncPrefs();
+    if (R.mainRoute === '#/ajustes') main().innerHTML = renderAjustes(), loadRoboStatus(); else rerender();
+    toast(isAuto(id) ? 'Cartão ao vivo abre sozinho nos jogos' + (id > 0 ? ' deste time' : ' deste campeonato') : 'Cartão automático desligado');
   },
   mute(el) {
     const id = Number(el.dataset.id);

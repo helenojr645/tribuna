@@ -882,6 +882,7 @@ async function loadExLive() {
     return `<div class="sec"><h2>${Number(id) ? `<a href="#/liga/${Number(id)}" style="color:inherit;font:inherit">${esc(c.name)}</a>` : esc(c.name)}</h2></div><div class="stack">${groups[id].map((g) => gameCard(g)).join('')}</div>`;
   }).join('') || '<div class="empty"><b>Nada ao vivo agora</b>Os jogos em andamento aparecem aqui.</div>';
   if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
+  if (R.animEx) { R.animEx = false; animar(el, 'anim-cards', 520); }
 }
 let searchTimer, searchLatest = '';
 function onSearch(value, target, sportFilter, render) {
@@ -1859,6 +1860,12 @@ function renderDetail() {
     document.body.style.overflow = matchMedia('(min-width:1000px)').matches ? '' : 'hidden';
     const html = renderGame(r.id);
     if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
+    // Anima quando o conteudo de verdade chega, nao o esqueleto (senao a troca cortava a animacao).
+    if (R.animDet && !el.querySelector('.d-body .skeleton')) {
+      const alvo = R.animDet === 'corpo' ? el.querySelector('.d-body') : el.firstElementChild;
+      R.animDet = false;
+      animar(alvo, 'anim-fade', 260);
+    }
     tickRelogios();
     const me = R.scrollMe && el.querySelector('.table tr.me');
     if (me) { me.scrollIntoView({ block: 'center' }); R.scrollMe = false; }
@@ -1877,10 +1884,10 @@ async function route() {
   if (r.view === 'jogo' && r.id !== R.jogoAberto) {
     R.jogoAberto = r.id;
     if (ehCelular()) { if (!estavaAberto) { det.classList.remove('saindo'); } }
-    else animar(det, 'anim-fade', 260);
+    else R.animDet = true;
   }
   if (r.view !== 'jogo') {
-    R.jogoAberto = null;
+    R.jogoAberto = null; R.animDet = false;
     // Fecha deslizando; no PC o painel e fixo e so troca.
     if (estavaAberto && ehCelular()) {
       det.classList.add('saindo');
@@ -1890,10 +1897,16 @@ async function route() {
     const changed = h !== R.mainRoute;
     const antes = ORDEM_TELAS[R.mainRoute.replace(/^#\//, '').split('/')[0]];
     R.mainRoute = h;
-    if (changed && R.routed) {
+    if (changed) {
+      const pilha = R.pilha || (R.pilha = []);
       const agora = ORDEM_TELAS[r.view];
-      animar(main(), agora >= (antes == null ? 0 : antes) ? 'anim-dir' : 'anim-esq', 320);
-      R.animar = true;
+      let dir;
+      if (pilha.length > 1 && pilha[pilha.length - 2] === h) { pilha.pop(); dir = 'anim-esq'; }
+      else {
+        if (agora < 4) R.pilha = [h]; else pilha.push(h);
+        dir = agora >= (antes == null ? 0 : antes) ? 'anim-dir' : 'anim-esq';
+      }
+      if (R.routed) { animar(main(), dir, 320); R.animar = true; }
     }
     if (changed || !R.routed) {
       window.scrollTo(0, 0); main().scrollTop = 0;
@@ -2001,11 +2014,17 @@ const ACTIONS = {
   },
   spoiler() { S.spoiler = !S.spoiler; R.reveal.clear(); save(); syncPrefs(); toast(S.spoiler ? 'Modo sem spoiler ligado' : 'Placares visíveis'); rerender(); },
   filter(el) { S.filter = el.dataset.v; save(); R.animar = true; delete main().dataset.h; rerender(); },
-  jumpday(el) { const t = document.getElementById('d-' + el.dataset.v); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+  jumpday(el) {
+    const t = document.getElementById('d-' + el.dataset.v);
+    if (!t) return;
+    const suave = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+    t.scrollIntoView({ behavior: suave ? 'smooth' : 'auto', block: 'start' });
+    animar(t, 'anim-destaque', 1100);
+  },
   exsport(el) {
     R.exLive = Number(el.dataset.v);
     document.querySelectorAll('[data-act="exsport"]').forEach((b) => b.setAttribute('aria-pressed', b === el));
-    const box = $('#ex-live'); box.innerHTML = '<div class="skeleton"></div>'; delete box.dataset.h;
+    const box = $('#ex-live'); box.innerHTML = '<div class="skeleton"></div>'; delete box.dataset.h; R.animEx = true;
     loadExLive().catch(() => { box.innerHTML = '<div class="banner">Não consegui carregar os jogos ao vivo.</div>'; });
   },
   follow(el) {
@@ -2042,17 +2061,17 @@ const ACTIONS = {
   },
   f1toggle() { S.f1.on = !S.f1.on; save(); syncPrefs(); rerender(); },
   f1tab(el) { R.f1Tab = el.dataset.v; R.animar = true; rerender(); },
-  f1sess(el) { R.f1Session = el.dataset.v; rerender(); },
-  revealleague(el) { R.reveal.add('l' + el.dataset.v); rerender(); },
-  revealteam(el) { R.reveal.add('t' + el.dataset.v); rerender(); },
-  tcomp(el) { const tid = Number(R.mainRoute.split('/')[2]); R.teamComp = { ...(R.teamComp || {}), [tid]: Number(el.dataset.v) || 0 }; rerender(); },
-  revealf1(el) { R.reveal.add('f1' + el.dataset.v); rerender(); },
-  reveal(el) { R.reveal.add(Number(el.dataset.id)); rerender(); },
+  f1sess(el) { R.f1Session = el.dataset.v; R.animar = true; rerender(); },
+  revealleague(el) { R.reveal.add('l' + el.dataset.v); R.animar = true; rerender(); },
+  revealteam(el) { R.reveal.add('t' + el.dataset.v); R.animar = true; rerender(); },
+  tcomp(el) { const tid = Number(R.mainRoute.split('/')[2]); R.teamComp = { ...(R.teamComp || {}), [tid]: Number(el.dataset.v) || 0 }; R.animar = true; rerender(); },
+  revealf1(el) { R.reveal.add('f1' + el.dataset.v); R.animar = true; rerender(); },
+  reveal(el) { R.reveal.add(Number(el.dataset.id)); if (el.closest('#detail')) R.animDet = true; else R.animar = true; rerender(); },
   gtab(el) {
     R.gameTab[Number(el.dataset.id)] = el.dataset.v;
     R.scrollMe = el.dataset.v === 'tab';
+    R.animDet = 'corpo';
     renderDetail();
-    animar($('#detail .d-body'), 'anim-fade', 260);
     poll(true);
   },
   close() { location.hash = R.mainRoute; },

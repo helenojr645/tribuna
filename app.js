@@ -1008,7 +1008,7 @@ function renderTeam(id) {
     const n = timeNaTabela(R.standings[x.id], c);
     if (!n) return '';
     const resumo = `${Number(n.linha.position) || ''}º de ${n.total}${n.grupo ? ' no ' + esc(n.grupo) : ''}${n.zona ? ` · <b style="color:${corOk(n.zona.color)}">${esc(n.zona.name)}${n.linha.destinationGuaranteed ? ' (garantido)' : ''}</b>` : ''}`;
-    return `<div class="sec"><h2>${esc(x.name)}</h2><a class="sec-link" href="#/liga/${Number(x.id)}">Tabela completa</a></div>
+    return `<div class="sec"><h2>${esc(x.name)}</h2><a class="sec-link" href="#/liga/${Number(x.id)}" data-act="tabelacompleta" data-id="${Number(x.id)}" data-time="${Number(id)}">Tabela completa</a></div>
       <div class="t2 posresumo">${resumo}</div>${standingsTable(n.d, [id])}`;
   }).join('');
   const forma = tenis ? '' : formaTime(t, id, t.results.filter(daComp));
@@ -1106,8 +1106,20 @@ function renderLeague(id) {
   const up = L.games.filter((g) => g.statusGroup === 2).sort(by).slice(0, 8);
   const done = L.games.filter((g) => g.statusGroup === 4).sort((a, b) => by(b, a)).slice(0, 6);
   const block = (t, arr) => arr.length ? `<div class="sec"><h2>${t}</h2></div><div class="stack">${arr.map((g) => gameCard(g)).join('')}</div>` : '';
-  return `${head}${block('Ao vivo', live)}${block('Próximos', up)}${block('Últimos', done)}
-    ${L.st && L.st.standings && L.st.standings[0] && (L.st.standings[0].rows || []).length ? `<div class="sec"><h2>Tabela</h2></div>${S.spoiler && !R.reveal.has('l' + id) ? `<button class="btn" data-act="revealleague" data-v="${id}">Mostrar tabela</button>` : standingsTable(L.st, S.teams.map((t) => t.id))}` : (!L.st ? '<div class="sec"><h2>Tabela</h2></div><div class="empty">Não consegui carregar a tabela agora. Tento de novo sozinho.</div>' : L.games.length ? '' : '<div class="empty">Sem jogos nem tabela no momento.</div>')}`;
+  const temTabela = !!(L.st && L.st.standings && L.st.standings[0] && (L.st.standings[0].rows || []).length);
+  const jogos = block('Ao vivo', live) + block('Próximos', up) + block('Últimos', done);
+  const tabela = temTabela
+    ? (S.spoiler && !R.reveal.has('l' + id) ? `<div style="height:14px"></div><button class="btn" data-act="revealleague" data-v="${id}">Mostrar tabela</button>` : `<div style="height:8px"></div>${standingsTable(L.st, S.teams.map((t) => t.id))}`)
+    : '';
+  // Copa sem tabela: so jogos, sem abas. Falha de rede na tabela: aviso dentro da aba.
+  const podeTabela = temTabela || !L.st;
+  if (!podeTabela) return `${head}${jogos || '<div class="empty">Sem jogos nem tabela no momento.</div>'}`;
+  const cur = (R.ligaTab || {})[id] || (jogos ? 'jogos' : 'tab');
+  const tabs = `<div class="tabs liga-tabs" role="tablist">${[['jogos', 'Jogos'], ['tab', 'Tabela']].map(([k, t]) => `<button class="tab" role="tab" data-act="ligatab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div>`;
+  const corpo = cur === 'tab'
+    ? (tabela || '<div class="empty">Não consegui carregar a tabela agora. Tento de novo sozinho.</div>')
+    : (jogos || '<div class="empty">Sem jogos no momento.</div>');
+  return `${head}${tabs}${corpo}`;
 }
 
 // ---------- Formula 1 ----------
@@ -1809,6 +1821,15 @@ function setMain(html) {
   m.dataset.h = html;
   flashChanges(m);
   tickRelogios();
+  if (R.rolarTime) {
+    const a = m.querySelector(`.table a[href="#/time/${R.rolarTime}"]`);
+    if (a) {
+      R.rolarTime = 0;
+      const tr = a.closest('tr');
+      tr.classList.add('me');
+      requestAnimationFrame(() => tr.scrollIntoView({ block: 'center' }));
+    }
+  }
   // Conteudo chegou depois do esqueleto: entra suave, uma vez so.
   if (R.animar && !m.querySelector('.skeleton')) {
     animar(m, 'anim-cards', 520);
@@ -2063,6 +2084,13 @@ const ACTIONS = {
   f1tab(el) { R.f1Tab = el.dataset.v; R.animar = true; rerender(); },
   f1sess(el) { R.f1Session = el.dataset.v; R.animar = true; rerender(); },
   revealleague(el) { R.reveal.add('l' + el.dataset.v); R.animar = true; rerender(); },
+  ligatab(el) { R.ligaTab = { ...(R.ligaTab || {}), [Number(el.dataset.id)]: el.dataset.v }; R.animar = true; rerender(); },
+  tabelacompleta(el) {
+    const id = Number(el.dataset.id);
+    R.ligaTab = { ...(R.ligaTab || {}), [id]: 'tab' };
+    R.rolarTime = Number(el.dataset.time) || 0;
+    location.hash = '#/liga/' + id;
+  },
   revealteam(el) { R.reveal.add('t' + el.dataset.v); R.animar = true; rerender(); },
   tcomp(el) { const tid = Number(R.mainRoute.split('/')[2]); R.teamComp = { ...(R.teamComp || {}), [tid]: Number(el.dataset.v) || 0 }; R.animar = true; rerender(); },
   revealf1(el) { R.reveal.add('f1' + el.dataset.v); R.animar = true; rerender(); },

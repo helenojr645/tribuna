@@ -230,6 +230,8 @@ img { display: block; }
 .tabs::-webkit-scrollbar { display: none; }
 .tab { flex: none; min-height: 46px; padding: 0 12px; font-weight: 600; font-size: 14px; color: var(--muted); border-bottom: 2px solid transparent; }
 .tab[aria-selected="true"] { color: var(--ink); border-color: var(--volt); }
+.liga-tabs { margin: 0 -16px; padding: 0 6px; top: var(--safe-t, 0px); }
+@media (min-width: 1000px) { .liga-tabs { margin: 0 -24px; padding: 0 14px; top: -20px; } }
 .d-body { padding: 14px 16px calc(var(--safe-b) + 32px); max-width: 720px; margin: 0 auto; }
 
 .info { display: flex; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
@@ -387,7 +389,7 @@ body { overflow-x: clip; }
 @keyframes tela-esq { from { opacity: 0; transform: translateX(-28px); } }
 @keyframes tela-fade { from { opacity: 0; transform: translateY(6px); } }
 /* Cartoes entram em cascata, so os primeiros: o resto ja esta fora da tela. */
-.anim-cards .card, .anim-cards .acomp, .anim-cards .f1card, .anim-cards .line-item, .anim-cards .list { animation: surge .3s cubic-bezier(.2, .8, .2, 1) both; }
+.anim-cards .card, .anim-cards .acomp, .anim-cards .f1card, .anim-cards .line-item, .anim-cards .list, .anim-cards .table, .anim-cards .zonas, .anim-cards .forma { animation: surge .3s cubic-bezier(.2, .8, .2, 1) both; }
 .anim-cards .stack > :nth-child(2) { animation-delay: 40ms; }
 .anim-cards .stack > :nth-child(3) { animation-delay: 80ms; }
 .anim-cards .stack > :nth-child(4) { animation-delay: 120ms; }
@@ -471,7 +473,7 @@ body { overflow-x: clip; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: .01ms !important; scroll-behavior: auto !important; }
   .anim-dir, .anim-esq, .anim-fade { animation: so-fade .2s ease-out !important; }
-  .anim-cards .card, .anim-cards .acomp, .anim-cards .f1card, .anim-cards .line-item, .anim-cards .list { animation: so-fade .22s ease-out both !important; animation-delay: 0s !important; }
+  .anim-cards .card, .anim-cards .acomp, .anim-cards .f1card, .anim-cards .line-item, .anim-cards .list, .anim-cards .table, .anim-cards .zonas, .anim-cards .forma { animation: so-fade .22s ease-out both !important; animation-delay: 0s !important; }
   .nav-item[aria-current="page"] svg, .flash .row.scored .pts { animation: none !important; }
   .skeleton { animation-duration: 2.4s !important; }
 }

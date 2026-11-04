@@ -273,6 +273,25 @@ img { display: block; }
 .stat-b i { display: block; height: 100%; border-radius: 4px; min-width: 2px; }
 .stat-b i.h { background: var(--home); }
 .stat-b i.a { background: var(--away); }
+/* Chave do mata-mata: uma coluna por fase, arrasta para o lado no iPhone. */
+.ch-fases { margin-top: 12px; }
+.chave { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; scroll-padding-inline: 16px; margin: 4px -16px 0; padding: 4px 16px 18px; scrollbar-width: thin; }
+.ch-col { flex: 0 0 min(76vw, 268px); scroll-snap-align: start; display: flex; flex-direction: column; }
+.ch-col h3 { font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 6px 2px 10px; }
+.ch-lista { flex: 1; display: flex; flex-direction: column; justify-content: space-around; gap: 10px; }
+.ch-jogo { display: block; background: var(--surface); border-radius: 14px; padding: 8px 10px; border: 1px solid var(--line); color: inherit; text-decoration: none; }
+.ch-jogo.live { border-color: var(--volt-t); }
+.ch-t { font-size: 11.5px; font-weight: 700; color: var(--muted); margin-bottom: 2px; }
+.ch-l { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 14px; font-weight: 600; }
+.ch-l em { flex: 1; min-width: 0; font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-l b { min-width: 18px; text-align: right; font-weight: 800; }
+.ch-l.fora { color: var(--muted); font-weight: 500; }
+.ch-l.ok em::after { content: " \2713"; color: var(--volt-t); font-weight: 800; }
+.ch-l.me em { color: var(--volt-t); }
+.ch-vazio { width: 24px; height: 24px; border-radius: 50%; border: 1.5px dashed var(--line); flex: none; }
+.ch-p { margin-top: 3px; padding-top: 5px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.ch-p .on { color: var(--volt-t); font-weight: 700; }
+@media (min-width: 1000px) { .chave { margin: 4px -24px 0; padding: 4px 24px 18px; scroll-padding-inline: 24px; } .ch-col { flex-basis: 250px; } }
 .subhead { font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 20px 0 12px; }
 
 .pitch {

@@ -91,6 +91,7 @@ const R = {
   relogio: {}, animar: null, telaAnterior: null,
   watchData: {}, liveStats: {},
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
+  chaves: {}, chaveIni: {},
   home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, standingsAt: {}, standingsFail: {}, nav: 0, f1Tab: 'fds', f1Session: null,
   exLive: 1, exQuery: '', known: {}, marc: {}
 };
@@ -1163,9 +1164,9 @@ async function loadLeague(id) {
     await loadHomeReserva();
     return { games: R.home.games.filter((g) => g.competitionId === id), competitions: [] };
   })]);
-  const fx = Date.now() < R.primaryDownUntil ? { games: [] } : await api(`/games/fixtures/?competitions=${id}`).catch(() => ({ games: [] }));
+  const [fx, chave] = Date.now() < R.primaryDownUntil ? [{ games: [] }, (R.chaves[id] || {}).v] : await Promise.all([api(`/games/fixtures/?competitions=${id}`).catch(() => ({ games: [] })), loadChave(id)]);
   const comp = (gm.competitions || []).find((c) => c.id === id) || (st && st.competitions || []).find((c) => c.id === id) || LEAGUES.find((l) => l.id === id) || { id, name: '' };
-  R.league = { id, comp, st, games: dedupeGames([fx.games, gm.games]) };
+  R.league = { id, comp, st, chave, games: dedupeGames([fx.games, gm.games]) };
   R.lastOk = Date.now(); R.failed = false;
 }
 function renderLeague(id) {
@@ -1187,15 +1188,87 @@ function renderLeague(id) {
   const tabela = temTabela
     ? (S.spoiler && !R.reveal.has('l' + id) ? `<div style="height:14px"></div><button class="btn" data-act="revealleague" data-v="${id}">Mostrar tabela</button>` : `<div style="height:8px"></div>${standingsTable(L.st, S.teams.map((t) => t.id))}`)
     : '';
-  // Copa sem tabela: so jogos, sem abas. Falha de rede na tabela: aviso dentro da aba.
+  // Copa sem tabela nem chave: so jogos, sem abas. Falha de rede na tabela: aviso dentro da aba.
   const podeTabela = temTabela || !L.st;
-  if (!podeTabela) return `${head}${jogos || '<div class="empty">Sem jogos nem tabela no momento.</div>'}`;
-  const cur = (R.ligaTab || {})[id] || (jogos ? 'jogos' : 'tab');
-  const tabs = `<div class="tabs liga-tabs"><div class="seg" role="tablist">${[['jogos', 'Jogos'], ['tab', 'Tabela']].map(([k, t]) => `<button class="tab" role="tab" data-act="ligatab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div></div>`;
+  const abas = [['jogos', 'Jogos']].concat(podeTabela ? [['tab', 'Tabela']] : [], L.chave ? [['chave', 'Chave']] : []);
+  if (abas.length < 2) return `${head}${jogos || '<div class="empty">Sem jogos nem tabela no momento.</div>'}`;
+  let cur = (R.ligaTab || {})[id] || (jogos ? 'jogos' : abas[1][0]);
+  if (!abas.some((x) => x[0] === cur)) cur = 'jogos';
+  const tabs = `<div class="tabs liga-tabs"><div class="seg" role="tablist">${abas.map(([k, t]) => `<button class="tab" role="tab" data-act="ligatab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div></div>`;
   const corpo = cur === 'tab'
     ? (tabela || '<div class="empty">Não consegui carregar a tabela agora. Tento de novo sozinho.</div>')
-    : (jogos || '<div class="empty">Sem jogos no momento.</div>');
+    : cur === 'chave'
+      ? (S.spoiler && !R.reveal.has('l' + id) ? `<div style="height:14px"></div><button class="btn" data-act="revealleague" data-v="${id}">Mostrar chave</button>` : renderChave(id, L.chave))
+      : (jogos || '<div class="empty">Sem jogos no momento.</div>');
   return `${head}${tabs}${corpo}`;
+}
+
+// ---------- Chave do mata-mata ----------
+// 365Scores /brackets: fases de mata-mata (stageType 3) com confrontos, placar agregado e quem passou.
+// O placar do confronto (group.score) segue a ordem de participants; cada jogo vem com mandante/visitante.
+async function loadChave(id) {
+  const c = R.chaves[id];
+  const vivo = (v) => v && v.fases.some((f) => f.confrontos.some((x) => x.jogos.some((j) => j.statusGroup === 3)));
+  const ttl = c && (!c.v ? 30 * 6e4 : vivo(c.v) ? 15e3 : 2 * 6e4);
+  if (c && Date.now() - c.at < ttl) return c.v;
+  try {
+    const d = await api(`/brackets/?competitions=${id}`);
+    R.chaves[id] = { at: Date.now(), v: chaveDe(d) };
+  } catch (_) { R.chaves[id] = { at: Date.now() - (c && c.v ? 6e4 : 29 * 6e4), v: c ? c.v : null }; }
+  return R.chaves[id].v;
+}
+function chaveDe(d) {
+  const bs = (d && d.brackets) || [];
+  const b = bs.find((x) => x.isCurrentSeason) || bs[0];
+  if (!b) return null;
+  const fases = (b.stages || []).filter((s) => s.stageType === 3 && (s.groups || []).length).map((s) => ({
+    nome: String(s.name || '').trim(), atual: !!s.isCurrentStage,
+    confrontos: s.groups.map((g) => {
+      const jogos = (g.games || []).map((x) => x.game ? { ...x.game, pen: x.penaltyScore } : { id: x.gameId, startTime: x.startTime, statusGroup: 2 }).filter((x) => x.id);
+      const iv = {};
+      jogos.forEach((j) => [j.homeCompetitor, j.awayCompetitor].forEach((t) => { if (t && t.id) { iv[t.id] = t.imageVersion; remember([t]); } }));
+      const ps = (g.participants || []).slice(0, 2);
+      while (ps.length < 2) ps.push({});
+      const sc = g.score || [];
+      return {
+        titulo: g.useName && !/^Group \d+$/.test(g.name || '') && String(g.name).trim() !== String(s.name || '').trim() ? g.name : '',
+        lados: ps.map((p, i) => ({ id: p.competitorId || 0, nome: p.competitorId ? (p.shortName || p.name) : 'A definir', iv: iv[p.competitorId], gols: sc[i] != null && sc[i] >= 0 ? Math.round(sc[i]) : null, passou: !!p.isQualified })),
+        jogos
+      };
+    })
+  }));
+  return fases.some((f) => f.confrontos.some((x) => x.lados.some((l) => l.id))) ? { fases } : null;
+}
+function renderChave(id, ch) {
+  const fases = ch.fases;
+  const atual = Math.max(0, fases.findIndex((f) => f.atual));
+  // Comeca nas oitavas (ou na primeira fase com ate 8 confrontos), salvo se o torneio ainda estiver antes delas.
+  const oitavas = fases.findIndex((f) => f.confrontos.length <= 8);
+  const padrao = Math.min(atual, oitavas < 0 ? atual : oitavas);
+  const ini = Math.min(R.chaveIni[id] != null ? R.chaveIni[id] : padrao, fases.length - 1);
+  const meus = S.teams.map((t) => t.id);
+  const lado = (l, decidido) => `<div class="ch-l${l.passou ? ' ok' : decidido ? ' fora' : ''}${meus.includes(l.id) ? ' me' : ''}">${l.id ? crest({ id: l.id, imageVersion: l.iv, name: l.nome }) : '<i class="ch-vazio"></i>'}<em>${esc(l.nome)}</em><b class="tn">${l.gols == null ? '' : l.gols}</b></div>`;
+  const jogoTxt = (cf, j, n) => {
+    const quem = cf.jogos.length > 1 ? (n === 0 ? 'Ida' : n === 1 ? 'Volta' : 'Jogo ' + (n + 1)) : '';
+    if (j.statusGroup === 3) return `<span class="on">${quem ? quem + ' ' : ''}ao vivo</span>`;
+    if (j.statusGroup !== 4 || !j.homeCompetitor) return j.startTime ? `${quem ? quem + ' ' : ''}${dayLabel(j.startTime)} ${hm(j.startTime)}` : '';
+    const h = num(j.homeCompetitor.score), a = num(j.awayCompetitor.score);
+    const inv = cf.lados[0].id && j.awayCompetitor.id === cf.lados[0].id;
+    const pe = Array.isArray(j.pen) && j.pen.length === 2 ? j.pen.map(num) : null;
+    const pen = pe ? ` (pên. ${inv ? pe[1] + '-' + pe[0] : pe[0] + '-' + pe[1]})` : /nalti/i.test(j.statusText || '') ? ' (pên.)' : '';
+    return `${quem ? quem + ' ' : ''}${inv ? a + '-' + h : h + '-' + a}${pen}`;
+  };
+  const card = (cf) => {
+    const decidido = cf.lados.some((l) => l.passou);
+    const vivo = cf.jogos.find((j) => j.statusGroup === 3);
+    const alvo = vivo || cf.jogos.slice().reverse().find((j) => j.statusGroup === 4) || cf.jogos[0];
+    const pe = cf.jogos.map((j, n) => jogoTxt(cf, j, n)).filter(Boolean).join(' · ');
+    const dentro = `${cf.titulo ? `<div class="ch-t">${esc(cf.titulo)}</div>` : ''}${lado(cf.lados[0], decidido)}${lado(cf.lados[1], decidido)}${pe ? `<div class="ch-p">${pe}</div>` : ''}`;
+    return alvo ? `<a class="ch-jogo${vivo ? ' live' : ''}" href="#/jogo/${Number(alvo.id)}">${dentro}</a>` : `<div class="ch-jogo">${dentro}</div>`;
+  };
+  const chips = fases.length > 1 ? `<div class="chips ch-fases" role="group" aria-label="Fase">${fases.map((f, i) => `<button class="chip" data-act="chaveini" data-id="${id}" data-v="${i}" aria-pressed="${i === ini}">${esc(f.nome)}</button>`).join('')}</div>` : '';
+  const cols = fases.slice(ini).map((f) => `<section class="ch-col"><h3>${esc(f.nome)}</h3><div class="ch-lista">${f.confrontos.map(card).join('')}</div></section>`).join('');
+  return `${chips}<div class="chave" data-id="${Number(id)}">${cols}</div>`;
 }
 
 // ---------- Formula 1 ----------
@@ -1922,8 +1995,17 @@ function renderNav() {
 function setMain(html) {
   const m = main();
   if (m.dataset.h === html) return;
+  // Chave do mata-mata: placar novo nao pode jogar de volta para a primeira coluna quem arrastou para o lado.
+  const chAntes = m.querySelector('.chave'), chId = chAntes && chAntes.dataset.id;
+  const lados = ['.chave', '.ch-fases'].map((s) => { const e = m.querySelector(s); return e ? e.scrollLeft : null; });
   m.innerHTML = html;
   m.dataset.h = html;
+  ['.chave', '.ch-fases'].forEach((s, i) => {
+    const e = m.querySelector(s);
+    if (!e) return;
+    if (lados[i] != null && (m.querySelector('.chave') || { dataset: {} }).dataset.id === chId) e.scrollLeft = lados[i];
+    else if (s === '.ch-fases') { const b = e.querySelector('[aria-pressed="true"]'); if (b) e.scrollLeft = Math.max(0, b.offsetLeft - e.offsetLeft - 16); }
+  });
   flashChanges(m);
   tickRelogios();
   if (R.rolarTime) {
@@ -2209,6 +2291,7 @@ const ACTIONS = {
   f1tab(el) { R.f1Tab = el.dataset.v; R.animar = true; rerender(); },
   f1sess(el) { R.f1Session = el.dataset.v; R.animar = true; rerender(); },
   revealleague(el) { R.reveal.add('l' + el.dataset.v); R.animar = true; rerender(); },
+  chaveini(el) { R.chaveIni = { ...R.chaveIni, [Number(el.dataset.id)]: Number(el.dataset.v) }; R.animar = true; rerender(); const ch = $('.chave'); if (ch) ch.scrollLeft = 0; },
   ligatab(el) { R.ligaTab = { ...(R.ligaTab || {}), [Number(el.dataset.id)]: el.dataset.v }; R.animar = true; rerender(); },
   tabelacompleta(el) {
     const id = Number(el.dataset.id);

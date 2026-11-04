@@ -109,6 +109,7 @@ function status_() {
     lastPush: Number(p.getProperty('lastPush') || 0),
     fails: Number(p.getProperty('fails') || 0),
     lastError: p.getProperty('lastError') || '',
+    usoMin: Math.round(usoHoje_(p) / 6000) / 10,
     fonte: p.getProperty('fonte') || '',
     devices: deviceIds_().length,
     // Diagnostico sem dado sensivel: nem endereco de push nem id do aparelho saem daqui.
@@ -410,11 +411,39 @@ function noteFailure_(p, message) {
   }
 }
 
+// O gatilho do Apps Script roda no maximo 1x por minuto. Com jogo ao vivo, o robo le de novo
+// ~30 s depois na mesma execucao (aviso ate 30 s mais cedo), enquanto o tempo do dia couber
+// na cota gratis do gatilho (90 min/dia em conta Gmail): passou de USO_MAX, volta a 1x por minuto.
+var USO_MAX = 60 * 60000, SEGUNDA_LEITURA = 30000;
 function tick() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
-  var p = props_();
+  var p = props_(), inicio = Date.now();
+  try {
+    var vivo = ciclo_(p);
+    if (vivo && Date.now() - inicio < 20000 && usoHoje_(p) < USO_MAX) {
+      Utilities.sleep(Math.max(0, SEGUNDA_LEITURA - (Date.now() - inicio)));
+      ciclo_(p);
+    }
+  } finally {
+    somaUso_(p, Date.now() - inicio);
+    lock.releaseLock();
+  }
+}
+
+function diaUso_() { return new Date().toISOString().slice(0, 10); }
+function usoHoje_(p) {
+  var u = String(p.getProperty('uso') || '').split('|');
+  return u[0] === diaUso_() ? Number(u[1]) || 0 : 0;
+}
+function somaUso_(p, ms) {
+  try { p.setProperty('uso', diaUso_() + '|' + Math.round(usoHoje_(p) + ms)); } catch (_) {}
+}
+
+// Uma leitura completa. Devolve true quando ha jogo seguido rolando agora.
+function ciclo_(p) {
   CACHE_CICLO = {};
+  var vivo = false;
   try {
     var now = Date.now();
     p.setProperty('lastTick', String(now));
@@ -464,6 +493,7 @@ function tick() {
         console.warn('365Scores fora, usando ' + fonte + ': ' + err);
       }
       if (fonte !== (mem.fonte || '')) p.setProperty('fonte', fonte);
+      vivo = lista.some(function (g) { return g.statusGroup === 3; });
       pollGames_(lista, devices, mem, writes, out, now, stale, partial);
     }
     if (plan.f1Active) {
@@ -482,9 +512,8 @@ function tick() {
   } catch (err) {
     console.error(err);
     noteFailure_(p, err && err.message || err);
-  } finally {
-    lock.releaseLock();
   }
+  return vivo;
 }
 
 function followedIds_(devices) {

@@ -36,7 +36,7 @@ function world() {
       computeDigest: (_a, s) => [...crypto.createHash('sha256').update(s).digest()].map((b) => (b > 127 ? b - 256 : b)),
       newBlob: (s) => ({ getBytes: () => (typeof s === 'string' ? [...Buffer.from(s)] : []) }),
       formatDate: () => '12',
-      sleep() {}
+      sleep(ms) { if (w.onSleep) { const f = w.onSleep; w.onSleep = null; w.clock += ms; f(); } }
     },
     UrlFetchApp: {
       fetch(url) {
@@ -709,6 +709,29 @@ t('aviso de teste registra cada etapa sem expor endereco nem aceitar confirmacao
   assert.ok(!txt.includes('abc') && !txt.includes(r.secret) && !txt.includes(msg.ack.t));
   w.ctx.sendTest_(dev, { u: 'https://mau.example/exec' });
   assert.equal(w.ctx.__sent[w.ctx.__sent.length - 1].ack, undefined, 'so confirma para o robo');
+});
+
+
+t('segunda leitura no mesmo minuto: gol no meio do minuto sai na hora; sem jogo ao vivo ou sem cota, nao repete', () => {
+  const w = world(); w.register();
+  const g = foot({ statusGroup: 3, gameTime: 20, gameTimeDisplay: "20'" }); score(g, 0, 0); w.games = [g];
+  w.tick(); w.next();
+  let dormiu = false;
+  w.onSleep = () => { dormiu = true; score(g, 1, 0); };
+  const m = w.tick();
+  assert.ok(dormiu, 'leu de novo dentro do minuto');
+  assert.ok(m.some((x) => /^GOL/.test(x.title) || /gol/i.test(x.title)), JSON.stringify(titles(m)));
+  // Cota do dia gasta: volta a 1 leitura por minuto.
+  w.next(); w.store.uso = '2026-11-04|' + (61 * 60000);
+  dormiu = false; w.onSleep = () => { dormiu = true; };
+  w.tick();
+  assert.ok(!dormiu, 'sem cota nao dorme');
+  // Sem jogo ao vivo: nao repete.
+  w.onSleep = null; w.next(); delete w.store.uso; g.statusGroup = 2; g.startTime = new Date(w.clock + 20 * 60000).toISOString();
+  dormiu = false; w.onSleep = () => { dormiu = true; };
+  w.tick();
+  assert.ok(!dormiu, 'sem jogo ao vivo nao dorme');
+  assert.ok(Number(w.store.uso.split('|')[1]) >= 0, 'soma o uso do dia');
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

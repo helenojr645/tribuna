@@ -7,7 +7,7 @@ const API_Q = 'appTypeId=5&langId=31&timezoneName=' + encodeURIComponent(Intl.Da
 const JOLPICA = 'https://api.jolpi.ca/ergast/f1';
 const OPENF1 = 'https://api.openf1.org/v1';
 const ROBO = window.TRIBUNA_ROBO || '';
-const POLL_MS = 15000;
+const POLL_MS = 15000, POLL_VIVO_MS = 5000;
 const YEAR = new Date().getFullYear();
 
 const LEAGUES = [
@@ -2303,7 +2303,13 @@ document.addEventListener('error', (e) => {
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { poll(true); keepPushAlive(); checkRobo(); } });
 window.addEventListener('online', () => poll(true));
-setInterval(() => poll(false), POLL_MS);
+// Com jogo ao vivo na tela, le a cada 5 s (a fonte guarda a resposta por 3 s); sem jogo, a cada 15 s.
+function vivoNaTela() {
+  const r = parseHash();
+  if (r.view === 'jogo' && r.id) { const g = acharJogo(Number(r.id)); return !g || g.statusGroup === 3; }
+  return !!(R.home && R.home.games.some((g) => g.statusGroup === 3 && gameIsMine(g))) || Object.keys(S.watch).length > 0;
+}
+(function laco() { setTimeout(() => { poll(false); laco(); }, vivoNaTela() ? POLL_VIVO_MS : POLL_MS); })();
 setInterval(tickFresh, 1000);
 setInterval(() => { if (!document.hidden) tickRelogios(); }, 1000);
 

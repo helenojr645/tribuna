@@ -792,6 +792,49 @@ function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
   });
 }
 
+// Escudo na notificacao (PC e Android; o iPhone sempre mostra o icone do app): o time seguido,
+// senao o do campeonato. Vai so o caminho; o sw.js monta o endereco da imagem.
+function escudoDe_(d, g) {
+  var segue = (d.follows && d.follows.c) || [];
+  var h = g.homeCompetitor || {}, a = g.awayCompetitor || {};
+  var t = segue.indexOf(a.id) >= 0 && segue.indexOf(h.id) < 0 ? a : h.id ? h : null;
+  if (segue.indexOf(h.id) < 0 && segue.indexOf(a.id) < 0 && g.competitionId) return 'v1/Competitions/' + Number(g.competitionId);
+  return t && t.id ? 'v' + (Number(t.imageVersion) || 1) + '/Competitors/' + Number(t.id) : undefined;
+}
+
+function ehApple_(d) { return !!(d.sub && /push\.apple\.com/.test(d.sub.endpoint || '')); }
+
+// No iPhone, bolinhas com as cores de cada time no titulo do cartao (pedido do Heleno, 04/11/2026).
+var BOLAS_ = { vermelho: '\uD83D\uDD34', laranja: '\uD83D\uDFE0', amarelo: '\uD83D\uDFE1', verde: '\uD83D\uDFE2', azul: '\uD83D\uDD35', roxo: '\uD83D\uDFE3', marrom: '\uD83D\uDFE4', preto: '\u26AB', branco: '\u26AA' };
+function bola_(hex) {
+  var m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+  if (!m) return '';
+  var n = parseInt(m[1], 16), r = (n >> 16 & 255) / 255, gr = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  var mx = Math.max(r, gr, b), mn = Math.min(r, gr, b), v = mx, s = mx ? (mx - mn) / mx : 0;
+  if (s < 0.25 || mx - mn < 0.12) return v > 0.55 ? BOLAS_.branco : BOLAS_.preto;
+  if (v < 0.2) return BOLAS_.preto;
+  var h = mx === r ? 60 * (((gr - b) / (mx - mn)) % 6) : mx === gr ? 60 * ((b - r) / (mx - mn) + 2) : 60 * ((r - gr) / (mx - mn) + 4);
+  if (h < 0) h += 360;
+  if (h < 15 || h >= 340) return BOLAS_.vermelho;
+  if (h < 42) return v < 0.6 ? BOLAS_.marrom : BOLAS_.laranja;
+  if (h < 70) return BOLAS_.amarelo;
+  if (h < 165) return BOLAS_.verde;
+  if (h < 255) return BOLAS_.azul;
+  return BOLAS_.roxo;
+}
+function bolas_(t) {
+  var a = bola_(t && t.color), b = bola_(t && t.awayColor);
+  return a === b ? a : a + b;
+}
+function comCores_(g, titulo) {
+  if (g.sportId === 3) return titulo;
+  var bh = bolas_(g.homeCompetitor), ba = bolas_(g.awayCompetitor);
+  if (!bh && !ba) return titulo;
+  var nomeA = shortName_(g.awayCompetitor), i = titulo.lastIndexOf(nomeA);
+  if (ba && i >= 0) titulo = titulo.slice(0, i + nomeA.length) + ' ' + ba + titulo.slice(i + nomeA.length);
+  return (bh ? bh + ' ' : '') + titulo;
+}
+
 var CARTAO_PRINCIPAL = { remind: 1, lineup: 1, kick: 1, goal: 1, red: 1, ht: 1, end: 1, tStart: 1, tSet: 1, tEnd: 1 };
 
 // Quem acompanha recebe um cartao unico por jogo; os demais, os avisos normais.
@@ -803,7 +846,7 @@ function enviarCartoes_(g, cur, prev, events, devices, out, now) {
     var w = watchDe_(d, g, now, prev);
     if (!w) {
       events.forEach(function (ev) {
-        if (wants_(d, g, ev.rule, now)) out.push({ dev: d, msg: { title: ev.title, body: ev.body, tag: ev.tag || ('j' + g.id), url: '#/jogo/' + g.id, troca: ev.troca || undefined } });
+        if (wants_(d, g, ev.rule, now)) out.push({ dev: d, msg: { title: ev.title, body: ev.body, tag: ev.tag || ('j' + g.id), url: '#/jogo/' + g.id, troca: ev.troca || undefined, ic: escudoDe_(d, g) } });
       });
       return;
     }
@@ -813,7 +856,7 @@ function enviarCartoes_(g, cur, prev, events, devices, out, now) {
     if (!acabou && !lances.length && !w.novo && !resumo) return;
     if (!cartoes[w.m]) cartoes[w.m] = montarCartao_(g, cur, lances, now);
     var c = cartoes[w.m];
-    out.push({ dev: d, msg: { title: c.title, body: c.body, tag: 'live' + g.id, url: '#/jogo/' + g.id, live: true, fim: acabou } });
+    out.push({ dev: d, msg: { title: ehApple_(d) ? comCores_(g, c.title) : c.title, body: c.body, tag: 'live' + g.id, url: '#/jogo/' + g.id, live: true, fim: acabou, ic: escudoDe_(d, g) } });
     enviou = true;
     if (w.novo) { w.novo = false; d._mudou = true; }
     // Encerrada so depois da entrega, no fim do ciclo.

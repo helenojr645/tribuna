@@ -734,4 +734,24 @@ t('segunda leitura no mesmo minuto: gol no meio do minuto sai na hora; sem jogo 
   assert.ok(Number(w.store.uso.split('|')[1]) >= 0, 'soma o uso do dia');
 });
 
+t('cartao no iPhone: bolinhas com as cores dos times; escudo do time seguido vai junto (PC)', () => {
+  const w = world();
+  const g = foot({ statusGroup: 3, gameTime: 30, gameTimeDisplay: "30'" });
+  g.homeCompetitor = { ...g.homeCompetitor, color: '#E10000', awayColor: '#111111', imageVersion: 4 };
+  g.awayCompetitor = { ...g.awayCompetitor, color: '#1D3E74', awayColor: '#FFFFFF', imageVersion: 2 };
+  score(g, 0, 0); w.games = [g];
+  w.register({ follows: { c: [2], comp: [], f1: false, mute: [] }, auto: { c: [2], comp: [] } });
+  w.tick(); w.next(); score(g, 1, 0);
+  const m = w.tick().filter((x) => x.live);
+  assert.equal(m.length, 1, 'um cartao');
+  assert.ok(m[0].title.startsWith('\u{1F534}\u26AB Flamengo 1 x 0 Grêmio \u{1F535}\u26AA'), m[0].title);
+  assert.equal(m[0].ic, 'v2/Competitors/2', 'escudo do Gremio, o time seguido');
+  // Jogo so do campeonato marcado: vai o simbolo do campeonato.
+  const w2 = world(); const g2 = foot({ statusGroup: 3 }); score(g2, 0, 0); w2.games = [g2];
+  w2.register({ follows: { c: [], comp: [], f1: false, mute: [] }, auto: { c: [], comp: [113] } });
+  const m2 = w2.tick().filter((x) => x.live);
+  assert.equal(m2[0].ic, 'v1/Competitions/113');
+  assert.ok(m2[0].title.startsWith('Flamengo'), 'sem cor na fonte, sem bolinha: ' + m2[0].title);
+});
+
 console.log(`ROBO OK: ${n} cenarios`);

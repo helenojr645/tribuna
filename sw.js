@@ -1,5 +1,5 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
-const VERSION = 'tribuna-19';
+const VERSION = 'tribuna-20';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'fontes.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
 const IMG_CACHE = 'tribuna-img';
 
@@ -63,7 +63,7 @@ self.addEventListener('push', (e) => {
         tag: m.tag || undefined,
         renotify: !!m.tag,
         requireInteraction: !!m.live && !m.fim,
-        icon: 'icons/icon-192.png',
+        icon: m.ic && /^v\d+\/Compet(itors|itions)\/\d+$/.test(m.ic) ? 'https://imagecache.365scores.com/image/upload/f_png,w_192,h_192,c_pad,b_rgb:1C1C1E,q_auto:good/' + m.ic : 'icons/icon-192.png',
         badge: 'icons/badge-96.png',
         data: { url: m.url || '#/agora' }
       });

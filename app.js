@@ -905,13 +905,13 @@ function renderExplorarShell() {
     <div id="ex-results"></div>
     <div id="ex-browse">
       ${times}
+      <div id="ex-mcomps">${exMeusCampsHtml(meus)}</div>
       <div class="chips" role="group" aria-label="Esporte">
         <button class="chip" data-act="exsport" data-v="1" aria-pressed="${R.exLive === 1}">Futebol ao vivo</button>
         <button class="chip" data-act="exsport" data-v="3" aria-pressed="${R.exLive === 3}">Tênis ao vivo</button>
         <a class="chip" href="#/f1">Fórmula 1</a>
       </div>
       <div id="ex-live"><div class="skeleton"></div></div>
-      <div id="ex-mcomps">${exMeusCampsHtml(meus)}</div>
       <div id="ex-others">${exOutrosHtml(meus)}</div>
     </div>`;
 }

@@ -81,7 +81,8 @@ const S = Object.assign({
   watch: {},
   // Cartao ao vivo automatico: todos os seus times (menos os desligados aqui) e os campeonatos marcados.
   autoOff: [],
-  autoComps: []
+  autoComps: [],
+  tema: 'auto'
 }, safeParse(localStorage.getItem(KEY)));
 S.rules = { ...DEFAULT_RULES, ...S.rules };
 S.watch = S.watch || {};
@@ -119,8 +120,25 @@ function crest(c, size) {
   return `<img class="crest${round}" loading="lazy" decoding="async" alt="" width="24" height="24" data-mono="${esc(initials(c.name))}" src="${esc(c.logo || imgUrl('Competitors', c.id, c.imageVersion || c.iv, size))}">`;
 }
 function leagueImg(l, cls) {
-  return `<img class="${cls || 'crest'}" loading="lazy" alt="" width="24" height="24" data-mono="${esc(initials(l.name))}" src="${imgUrl('Competitions', l.id, l.imageVersion || l.iv)}">`;
+  // No tema claro a fonte tem logo proprio para fundo branco (Competitions/light); sem ele, usa o normal.
+  const normal = imgUrl('Competitions', l.id, l.imageVersion || l.iv);
+  const claro = temaClaro() ? imgUrl('Competitions/light', l.id, l.imageVersion || l.iv) : '';
+  return `<img class="${cls || 'crest'}" loading="lazy" alt="" width="24" height="24" data-mono="${esc(initials(l.name))}" ${claro ? `data-alt="${normal}" src="${claro}"` : `src="${normal}"`}>`;
 }
+// ---------- Tema ----------
+const temaClaro = () => document.documentElement.dataset.tema === 'claro';
+const mqClaro = window.matchMedia ? matchMedia('(prefers-color-scheme: light)') : null;
+function aplicarTema() {
+  const claro = S.tema === 'claro' || (S.tema === 'auto' && !!(mqClaro && mqClaro.matches));
+  document.documentElement.dataset.tema = claro ? 'claro' : 'escuro';
+  const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = claro ? '#ECEFF5' : '#000000';
+  const cs = document.querySelector('meta[name="color-scheme"]'); if (cs) cs.content = claro ? 'light' : 'dark';
+}
+// iPhone na Tela de Inicio so troca a cor da barra de status (relogio, bateria) ao reabrir a pagina.
+const precisaReabrir = () => !!navigator.standalone;
+aplicarTema();
+// Automatico: o aparelho trocou de modo com o app aberto.
+if (mqClaro && mqClaro.addEventListener) mqClaro.addEventListener('change', () => { if (S.tema === 'auto') { aplicarTema(); rerender(); } });
 function dayKey(d) { const x = new Date(d); return `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`; }
 function hm(d) { return new Date(d).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); }
 function dayLabel(d) {
@@ -1063,7 +1081,7 @@ function renderTeam(id) {
   const tabelas = camps.filter((x) => x.tab && ativos.has(x.id) && (!sel || x.id === sel)).map((x) => {
     const n = timeNaTabela(R.standings[x.id], c);
     if (!n) return '';
-    const resumo = `${Number(n.linha.position) || ''}º de ${n.total}${n.grupo ? ' no ' + esc(n.grupo) : ''}${n.zona ? ` · <b style="color:${corOk(n.zona.color)}">${esc(n.zona.name)}${n.linha.destinationGuaranteed ? ' (garantido)' : ''}</b>` : ''}`;
+    const resumo = `${Number(n.linha.position) || ''}º de ${n.total}${n.grupo ? ' no ' + esc(n.grupo) : ''}${n.zona ? ` · <b class="zona-t" style="--z:${corOk(n.zona.color)}">${esc(n.zona.name)}${n.linha.destinationGuaranteed ? ' (garantido)' : ''}</b>` : ''}`;
     return `<div class="sec"><h2>${esc(x.name)}</h2><a class="sec-link" href="#/liga/${Number(x.id)}" data-act="tabelacompleta" data-id="${Number(x.id)}" data-time="${Number(id)}">Tabela completa</a></div>
       <div class="t2 posresumo">${resumo}</div>${standingsTable(n.d, [id])}`;
   }).join('');
@@ -1774,6 +1792,10 @@ function renderAjustes() {
       return `<div class="item"><a class="grow" href="#/jogo/${id}"><div class="t1">${esc(nome)}</div><div class="t2">${S.watch[k].m === 'all' ? 'Tudo' : 'Principais'}</div></a><button class="follow" data-act="watchstop" data-id="${id}">Parar</button></div>`;
     }).join('')}</div>` : ''}
 
+    <div class="sec"><h2>Aparência</h2></div>
+    <div class="seg tema-seg" role="radiogroup" aria-label="Tema">${[['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']].map(([k, t]) => `<button class="tab" role="radio" data-act="tema" data-v="${k}" aria-checked="${S.tema === k}" aria-selected="${S.tema === k}">${t}</button>`).join('')}</div>
+    <p class="muted legenda-auto">Automático segue o modo claro ou escuro do aparelho.</p>
+
     <div class="sec"><h2>Avisar no futebol</h2></div>
     <div class="set-group">
       ${sw('remind', 'Lembrete antes do jogo', '20 minutos antes')}${sw('lineup', 'Escalações confirmadas')}${sw('kick', 'Início do jogo')}
@@ -2116,6 +2138,16 @@ const ACTIONS = {
     }
     rerender();
   },
+  tema(el) {
+    const v = el.dataset.v;
+    if (S.tema === v) return;
+    const antes = document.documentElement.dataset.tema;
+    S.tema = v; save();
+    aplicarTema();
+    main().innerHTML = renderAjustes(); loadRoboStatus();
+    toast(v === 'auto' ? 'Tema segue o aparelho' : v === 'claro' ? 'Modo claro' : 'Modo escuro');
+    if (precisaReabrir() && antes !== document.documentElement.dataset.tema) setTimeout(() => location.reload(), 700);
+  },
   spoiler() { S.spoiler = !S.spoiler; R.reveal.clear(); save(); syncPrefs(); toast(S.spoiler ? 'Modo sem spoiler ligado' : 'Placares visíveis'); rerender(); },
   filter(el) { S.filter = el.dataset.v; save(); R.animar = true; delete main().dataset.h; rerender(); },
   jumpday(el) {
@@ -2294,6 +2326,7 @@ document.addEventListener('focusin', (e) => { const g = e.target.closest && e.ta
 document.addEventListener('error', (e) => {
   const t = e.target;
   if (t && t.tagName === 'IMG' && t.dataset.mono) {
+    if (t.dataset.alt) { t.src = t.dataset.alt; delete t.dataset.alt; return; }
     const d = document.createElement('span');
     d.className = 'mono'; d.textContent = t.dataset.mono; d.setAttribute('aria-hidden', 'true');
     t.replaceWith(d);

@@ -116,7 +116,8 @@ function status_() {
       var f = d.follows || {};
       return {
         host: d.sub ? d.sub.endpoint.match(/^https:\/\/([^/]+)/)[1] : '',
-        times: (f.c || []).length, ligas: (f.comp || []).length, f1: !!f.f1, acompanhando: (d.watch || []).length
+        times: (f.c || []).length, ligas: (f.comp || []).length, f1: !!f.f1, acompanhando: (d.watch || []).length,
+        auto: d.auto ? { times: d.auto.c.length, ligas: d.auto.comp } : null
       };
     }),
     envio: JSON.parse(p.getProperty('lastSend') || 'null'),

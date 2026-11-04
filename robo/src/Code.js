@@ -885,6 +885,8 @@ function montarCartao_(g, cur, lances, now) {
     }
     var game = (g.stages || []).filter(function (x) { return x.id === 34 && x.isLive; })[0];
     var fmt = function (v) { return v === 50 ? 'AD' : num_(v); };
+    // Campeonato na 1a linha do cartao ao vivo (pedido do Heleno em 04/11/2026).
+    if (g.competitionDisplayName) linhas.push(g.competitionDisplayName);
     linhas.push(cabeca || (g.statusText || '') + (game ? ' · Game ' + fmt(game.homeCompetitorScore) + '-' + fmt(game.awayCompetitorScore) : ''));
     var ace = par_(stats, /^Ace$/i, g), dupla = par_(stats, /^Dupla falta/i, g), breaks = par_(stats, /^Break points/i, g), pts = par_(stats, /^Total de pontos/i, g);
     var l2 = [], l3 = [];
@@ -904,6 +906,7 @@ function montarCartao_(g, cur, lances, now) {
     return { title: titulo2, body: linhas.join('\n') };
   }
   var tituloF = shortName_(g.homeCompetitor) + ' ' + cur.h + ' x ' + cur.a + ' ' + shortName_(g.awayCompetitor) + (relogio ? ' · ' + relogio : '');
+  if (g.competitionDisplayName) linhas.push(g.competitionDisplayName);
   if (cabeca) linhas.push(cabeca);
   else if (cur.last) linhas.push('Último lance: ' + cur.last);
   var posse = par_(stats, /^Posse de Bola/i, g), gol = par_(stats, /^Chutes no gol/i, g), chutes = par_(stats, /^Total de chutes/i, g), esc = par_(stats, /^Escanteios/i, g);
@@ -915,8 +918,8 @@ function montarCartao_(g, cur, lances, now) {
   if (a1.length) linhas.push(a1.join(' · '));
   if (a2.length) linhas.push(a2.join(' · '));
   var pr = pressao_(g);
-  if (pr && linhas.length < 4) linhas.push(pr);
-  if (!linhas.length) linhas.push(g.competitionDisplayName || 'Ao vivo');
+  if (pr && linhas.length < 5) linhas.push(pr);
+  if (!linhas.length) linhas.push('Ao vivo');
   return { title: tituloF, body: linhas.join('\n') };
 }
 

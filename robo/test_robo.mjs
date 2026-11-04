@@ -105,6 +105,8 @@ const score = (g, h, a) => { g.homeCompetitor = { ...g.homeCompetitor, score: h 
 const goal = (comp, min, player) => ({ competitorId: comp, gameTime: min, gameTimeDisplay: min + "'", playerId: player, stageId: 7, eventType: { id: 1, name: 'Gol' } });
 const titles = (m) => m.map((x) => x.title);
 let n = 0;
+// Cartao ao vivo: 1a linha e o campeonato; o resto e o lance e os numeros.
+const semLiga = (n) => { const ls = n.body.split(String.fromCharCode(10)); assert.ok(ls[0] && !/^(GOL|Fim|Amarelo)/.test(ls[0]), 'campeonato na 1a linha: ' + n.body); return ls.slice(1).join(String.fromCharCode(10)); };
 const t = (name, fn) => { fn(); n++; console.log('OK  ' + name); };
 
 t('jogo completo: lembrete, inicio, gol, intervalo, vermelho, fim, sem repetir', () => {
@@ -461,7 +463,9 @@ t('cartao: autor atrasado atualiza o cartao de quem acompanha', () => {
   w.next(); w.details[7].events = [goal(1, 61, 9)];
   m = w.tick();
   assert.equal(m.length, 1, 'um cartao');
-  assert.ok(m[0].body.startsWith("GOL! Pedro 61'"), m[0].body);
+  const ls = m[0].body.split(String.fromCharCode(10));
+  assert.equal(ls[0], w.games[0].competitionDisplayName, 'campeonato na 1a linha');
+  assert.ok(ls[1].startsWith("GOL! Pedro 61'"), m[0].body);
 });
 
 t('cartao automatico do time seguido: abre no apito, gol atualiza, fim encerra sem tocar em Acompanhar', () => {
@@ -476,7 +480,7 @@ t('cartao automatico do time seguido: abre no apito, gol atualiza, fim encerra s
   w.next(); score(g, 1, 0); w.details[7].events = [goal(1, 5, 9)];
   m = w.tick();
   assert.equal(m.length, 1); assert.equal(m[0].tag, 'live7');
-  assert.ok(m[0].body.startsWith("GOL! Pedro 5'"), m[0].body);
+  assert.ok(semLiga(m[0]).startsWith("GOL! Pedro 5'"), m[0].body);
   w.next(); g.statusGroup = 4; g.statusText = 'Fim';
   m = w.tick();
   assert.equal(m.length, 1); assert.equal(m[0].fim, true, 'cartao final');
@@ -522,7 +526,7 @@ t('cartao: primeiro resumo, gol atualiza o mesmo cartao, amarelo so no modo comp
   m = w.tick();
   assert.equal(m.length, 1, 'um cartao, nao aviso e cartao');
   assert.equal(m[0].tag, 'live7');
-  assert.ok(m[0].title.startsWith('Flamengo 1 x 0') && m[0].body.startsWith("GOL! Pedro 62'"), m[0].title + ' / ' + m[0].body);
+  assert.ok(m[0].title.startsWith('Flamengo 1 x 0') && semLiga(m[0]).startsWith("GOL! Pedro 62'"), m[0].title + ' / ' + m[0].body);
   w.next(); w.details[7].events.push({ competitorId: 2, gameTime: 64, gameTimeDisplay: "64'", playerId: 9, stageId: 7, eventType: { id: 2, name: 'Cartão Amarelo' } });
   assert.deepEqual(w.tick(), [], 'modo principal ignora amarelo');
 });
@@ -536,15 +540,15 @@ t('cartao completo: amarelo e troca atualizam; resumo sai a cada 15 min; ultimo 
   assert.ok(m0[0].body.includes("Último lance: GOL! Pedro 20'"), m0[0].body);
   w.next(); w.details[7].events.push({ competitorId: 2, gameTime: 31, gameTimeDisplay: "31'", playerId: 8, stageId: 7, eventType: { id: 2, name: 'Cartão Amarelo' } });
   let m = w.tick();
-  assert.ok(m[0].body.startsWith("Amarelo: Gabi 31' (Grêmio)"), m[0].body);
+  assert.ok(semLiga(m[0]).startsWith("Amarelo: Gabi 31' (Grêmio)"), m[0].body);
   w.next(); w.details[7].events.push({ competitorId: 1, gameTime: 33, gameTimeDisplay: "33'", playerId: 8, extraPlayers: [9], stageId: 7, eventType: { id: 1000, name: 'Substitution' } });
   m = w.tick();
-  assert.ok(m[0].body.startsWith("Flamengo: entra Gabi, sai Pedro 33'"), m[0].body);
+  assert.ok(semLiga(m[0]).startsWith("Flamengo: entra Gabi, sai Pedro 33'"), m[0].body);
   w.next(5); assert.deepEqual(w.tick(), [], 'antes dos 15 min');
   w.next(10);
   m = w.tick();
   assert.equal(m.length, 1, 'resumo de 15 min');
-  assert.ok(m[0].body.startsWith('Último lance: Flamengo: entra Gabi'), m[0].body);
+  assert.ok(semLiga(m[0]).startsWith('Último lance: Flamengo: entra Gabi'), m[0].body);
 });
 
 t('cartao: fim encerra a vigia e silencio/spoiler nao bloqueiam quem pediu para acompanhar', () => {
@@ -557,7 +561,7 @@ t('cartao: fim encerra a vigia e silencio/spoiler nao bloqueiam quem pediu para 
   const m = w.tick();
   assert.equal(m.length, 1);
   assert.equal(m[0].title, 'Flamengo 2 x 1 Grêmio · Fim');
-  assert.ok(m[0].body.startsWith('Fim de jogo') && m[0].body.includes('No gol 7 x 3'), m[0].body);
+  assert.ok(semLiga(m[0]).startsWith('Fim de jogo') && m[0].body.includes('No gol 7 x 3'), m[0].body);
   assert.equal(JSON.parse(w.store['dev:' + r.id]).watch.length, 0, 'vigia encerrada');
   w.next(20); assert.deepEqual(w.tick(), [], 'nada depois do fim');
 });
@@ -632,7 +636,7 @@ t('fim visto so depois da parada: sai o cartao final e a vigia encerra', () => {
   const m = w.tick();
   assert.equal(m.length, 1);
   assert.equal(m[0].title, 'Flamengo 2 x 0 Grêmio · Fim');
-  assert.ok(m[0].body.startsWith('Fim de jogo'), m[0].body);
+  assert.ok(semLiga(m[0]).startsWith('Fim de jogo'), m[0].body);
   assert.equal(m[0].fim, true);
   assert.equal(JSON.parse(w.store['dev:' + r.id]).watch.length, 0);
   w.next(); assert.deepEqual(w.tick(), []);

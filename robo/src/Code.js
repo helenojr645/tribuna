@@ -414,11 +414,15 @@ function noteFailure_(p, message) {
 // O gatilho do Apps Script roda no maximo 1x por minuto. Com jogo ao vivo, o robo le de novo
 // ~30 s depois na mesma execucao (aviso ate 30 s mais cedo), enquanto o tempo do dia couber
 // na cota gratis do gatilho (90 min/dia em conta Gmail): passou de USO_MAX, volta a 1x por minuto.
-var USO_MAX = 60 * 60000, SEGUNDA_LEITURA = 30000;
+// Medido em 04/11/2026: noite de Champions com a 2a leitura chegou a 64 min antes das 17h. Por isso a
+// 2a leitura ficou so para jogo de time seguido ou acompanhado (nao campeonato inteiro) e para ate 40 min
+// no dia; passando de 80 min, o robo le em minutos alternados para nao estourar a cota e parar de vez.
+var USO_MAX = 40 * 60000, USO_ALTERNADO = 80 * 60000, SEGUNDA_LEITURA = 30000;
 function tick() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
   var p = props_(), inicio = Date.now();
+  if (usoHoje_(p) > USO_ALTERNADO && new Date().getUTCMinutes() % 2) { lock.releaseLock(); return; }
   try {
     var vivo = ciclo_(p);
     if (vivo && Date.now() - inicio < 20000 && usoHoje_(p) < USO_MAX) {
@@ -493,7 +497,8 @@ function ciclo_(p) {
         console.warn('365Scores fora, usando ' + fonte + ': ' + err);
       }
       if (fonte !== (mem.fonte || '')) p.setProperty('fonte', fonte);
-      vivo = lista.some(function (g) { return g.statusGroup === 3; });
+      var meus = followedIds_(devices).c.map(Number);
+      vivo = lista.some(function (g) { return g.statusGroup === 3 && (meus.indexOf(g.homeCompetitor.id) >= 0 || meus.indexOf(g.awayCompetitor.id) >= 0); });
       pollGames_(lista, devices, mem, writes, out, now, stale, partial);
     }
     if (plan.f1Active) {

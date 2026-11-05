@@ -91,9 +91,9 @@ const R = {
   relogio: {}, animar: null, telaAnterior: null,
   watchData: {}, liveStats: {},
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
-  chaves: {}, chaveIni: {},
+  chaves: {}, chaveIni: {}, aoVivo: {}, homeCamps: null,
   home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, standingsAt: {}, standingsFail: {}, nav: 0, f1Tab: 'fds', f1Session: null,
-  exLive: 1, exQuery: '', known: {}, marc: {}
+  exQuery: '', known: {}, marc: {}
 };
 
 function safeParse(s) { try { return JSON.parse(s) || {}; } catch (_) { return {}; } }
@@ -400,7 +400,7 @@ function spanRelogio(id, base) { return `<span class="tn" data-relogio="${Number
 function spanAte(quando, base, pref) { return `<span class="tn" data-ate="${esc(quando)}" data-base="${esc(base)}"${pref ? ` data-pref="${esc(pref)}"` : ''}>${esc(base)}</span>`; }
 
 // ---------- Animacoes de tela ----------
-const ORDEM_TELAS = { agora: 0, agenda: 1, explorar: 2, ajustes: 3, time: 4, liga: 4, f1: 4 };
+const ORDEM_TELAS = { agora: 0, agenda: 1, explorar: 2, ajustes: 3, time: 4, liga: 4, f1: 4, aovivo: 4 };
 function animar(el, classe, ms) {
   if (!el) return;
   // A cascata dos cartoes convive com o deslize da tela; cada familia tem seu proprio tempo.
@@ -654,7 +654,14 @@ async function loadHomePrincipal() {
   }
   if (comps.length) calls.push(api(`/games/current/?competitions=${comps.join(',')}`));
   const f1Call = S.f1.on ? f1Current().catch(() => R.f1) : Promise.resolve(null);
-  const [res, f1] = await Promise.all([Promise.all(calls), f1Call]);
+  // Campeonatos dos times seguidos (Brasileirao, Champions...): so para a secao "Nos campeonatos dos seus times".
+  if (!R.mcompsPedido || Date.now() - R.mcompsPedido > 36e5) { R.mcompsPedido = Date.now(); loadMeusCamps().catch(() => {}); }
+  const extra = campsDosTimes().filter((id) => !comps.includes(id));
+  const campsFresco = R.homeCamps && R.homeCamps.key === extra.join(',') && Date.now() - R.homeCamps.at < 3e4;
+  const campsCall = !extra.length ? Promise.resolve([]) : campsFresco ? Promise.resolve(null)
+    : api(`/games/allscores/?competitions=${extra.join(',')}&startDate=${diaApi(Date.now() - 864e5)}&endDate=${diaApi(Date.now())}&onlyLiveGames=true&showOdds=false`).then((d) => d.games || []).catch(() => null);
+  const [res, f1, camps] = await Promise.all([Promise.all(calls), f1Call, campsCall]);
+  if (camps) { R.homeCamps = { key: extra.join(','), games: camps, at: Date.now() }; remember([].concat(...camps.map((g) => [g.homeCompetitor, g.awayCompetitor]))); }
   if (res.some((r) => !Array.isArray(r.games))) throw new Error('resposta sem jogos');
   // A lista "current" e a mais fresca: entra por ultimo para sobrescrever fixtures.
   const games = dedupeGames([res[1] && res[1].games, res[0] && res[0].games, res[2] && res[2].games].filter(Boolean)
@@ -767,6 +774,11 @@ function renderAgora() {
   const ended = shown.filter((g) => g.statusGroup === 4 && now - new Date(g.startTime) < 60 * 36e5).sort((a, b) => byStart(b, a)).slice(0, 8);
   const ev = S.f1.on && R.f1 && R.f1.events && R.f1.events[0];
   const showF1 = ev && (f === 'all' || f === 'f1');
+  const jaTem = new Set(shown.map((g) => g.id));
+  const ordemCamp = campsDosTimes();
+  const campsOk = R.homeCamps && Date.now() - R.homeCamps.at < 12e4;
+  const campsVivo = f === 'f1' || !campsOk ? [] : R.homeCamps.games.filter((g) => g.statusGroup === 3 && sportOk(g) && !jaTem.has(g.id) && !S.watch[g.id])
+    .sort((a, b) => (ordemCamp.indexOf(a.competitionId) - ordemCamp.indexOf(b.competitionId)) || byStart(a, b));
 
   const chip = (k, label) => `<button class="chip" data-act="filter" data-v="${k}" aria-pressed="${f === k}">${label}</button>`;
   const section = (title, list, opts) => list.length ? `<div class="sec"><h2>${title}</h2></div><div class="stack">${list.map((g) => gameCard(g, opts)).join('')}</div>` : '';
@@ -779,6 +791,8 @@ function renderAgora() {
     <div class="chips" role="group" aria-label="Filtrar esporte">${chip('all', 'Tudo')}${chip('foot', 'Futebol')}${chip('ten', 'Tênis')}${S.f1.on ? chip('f1', 'Fórmula 1') : ''}</div>
     ${acomp.length ? `<div class="sec"><h2>Acompanhando</h2></div><div class="stack">${acomp.map(cartaoAcompanhando).join('')}</div>` : ''}
     ${f !== 'f1' ? section('Ao vivo', live) : ''}
+    ${campsVivo.length ? section('Nos campeonatos dos seus times', campsVivo.slice(0, 6)) : ''}
+    ${f !== 'f1' ? `<a class="item todos-vivo" href="#/aovivo/${f === 'ten' ? 3 : 1}"><i class="av-dot" aria-hidden="true"></i><span class="grow t1">Todos os jogos ao vivo</span>${campsVivo.length > 6 ? `<span class="muted">+${campsVivo.length - 6} nos seus campeonatos</span>` : ''}<span class="av-seta" aria-hidden="true">›</span></a>` : ''}
     ${showF1 && f1Weekend ? `<div class="sec"><h2>Fórmula 1</h2></div>${f1Card(ev)}` : ''}
     ${f !== 'f1' ? section('Hoje', today) : ''}
     ${f !== 'f1' ? section('Próximos', next) : ''}
@@ -925,38 +939,74 @@ function renderExplorarShell() {
     <div id="ex-browse">
       ${times}
       <div id="ex-mcomps">${exMeusCampsHtml(meus)}</div>
-      <div class="chips" role="group" aria-label="Esporte">
-        <button class="chip" data-act="exsport" data-v="1" aria-pressed="${R.exLive === 1}">Futebol ao vivo</button>
-        <button class="chip" data-act="exsport" data-v="3" aria-pressed="${R.exLive === 3}">Tênis ao vivo</button>
+      <div class="sec"><h2>Ao vivo agora</h2></div>
+      <div class="chips" role="group" aria-label="Ao vivo">
+        <a class="chip" href="#/aovivo/1">Futebol ao vivo</a>
+        <a class="chip" href="#/aovivo/3">Tênis ao vivo</a>
         <a class="chip" href="#/f1">Fórmula 1</a>
       </div>
-      <div id="ex-live"><div class="skeleton"></div></div>
       <div id="ex-others">${exOutrosHtml(meus)}</div>
     </div>`;
 }
-async function loadExLive() {
-  const el = $('#ex-live');
-  if (!el) return;
-  const sport = R.exLive;
-  const d = await comReserva(() => api(`/games/current/?sports=${sport}`), async () => {
+// Campeonatos dos times seguidos (lidos do 365Scores, 1 dia) + campeonatos marcados, nessa ordem.
+function campsDosTimes() {
+  const salvo = meusCampsSalvos();
+  const ids = (salvo.c.key === salvo.key ? salvo.c.comps : []).map((x) => x.id);
+  S.comps.forEach((x) => { if (!ids.includes(x.id)) ids.push(x.id); });
+  return ids;
+}
+// Ao vivo agora: todos os jogos em andamento. /games/current corta em 100 jogos; allscores com
+// onlyLiveGames traz so os ao vivo (de ontem e hoje, para jogo que vira a meia-noite).
+function diaApi(t) { const x = new Date(t); return `${String(x.getDate()).padStart(2, '0')}/${String(x.getMonth() + 1).padStart(2, '0')}/${x.getFullYear()}`; }
+async function loadAoVivo(sport) {
+  if (!campsDosTimes().length || meusCampsSalvos().c.key !== meusCampsSalvos().key) await loadMeusCamps().catch(() => {});
+  const reserva = async () => {
     const alt = await Fontes.todos(sport === 3);
     R.fonte = alt.fonte;
-    return { games: alt.jogos.filter((g) => g.sportId === sport), competitions: [], competitors: [] };
-  });
+    return { games: alt.jogos.filter((g) => g.sportId === sport), competitions: [], competitors: [], countries: [] };
+  };
+  // Erro so deste endereco nao manda o app inteiro para a reserva (comReserva faria isso por 1 min).
+  let d;
+  if (Date.now() < R.primaryDownUntil) d = await reserva();
+  else {
+    try { d = await api(`/games/allscores/?sports=${sport}&startDate=${diaApi(Date.now() - 864e5)}&endDate=${diaApi(Date.now())}&onlyLiveGames=true&showOdds=false`); R.fonte = null; }
+    catch (_) { d = await reserva(); }
+  }
   R.lastOk = Date.now(); R.failed = false;
-  if (R.exLive !== sport || !$('#ex-live')) return;
   remember(d.competitors);
-  const compOf = {}; (d.competitions || []).forEach((c) => { compOf[c.id] = c; });
-  const live = d.games.filter((g) => g.statusGroup === 3);
-  const groups = {};
-  live.forEach((g) => { const k = g.competitionId || g.competitionDisplayName; (groups[k] = groups[k] || []).push(g); });
-  const order = Object.keys(groups).sort((a, b) => ((compOf[b] && compOf[b].popularityRank) || 0) - ((compOf[a] && compOf[a].popularityRank) || 0));
-  const html = order.slice(0, 15).map((id) => {
-    const c = compOf[id] || { id, name: groups[id][0].competitionDisplayName || id };
-    return `<div class="sec"><h2>${Number(id) ? `<a href="#/liga/${Number(id)}" style="color:inherit;font:inherit">${esc(c.name)}</a>` : esc(c.name)}</h2></div><div class="stack">${groups[id].map((g) => gameCard(g)).join('')}</div>`;
-  }).join('') || '<div class="empty"><b>Nada ao vivo agora</b>Os jogos em andamento aparecem aqui.</div>';
-  if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
-  if (R.animEx) { R.animEx = false; animar(el, 'anim-cards', 520); }
+  const compOf = {}; (d.competitions || []).forEach((x) => { compOf[x.id] = x; });
+  const pais = {}; (d.countries || []).forEach((x) => { pais[x.id] = x.name; });
+  R.aoVivo[sport] = { sport, compOf, pais, games: (d.games || []).filter((g) => g.statusGroup === 3), at: Date.now() };
+}
+function renderAoVivo(sport) {
+  const chip = (k, t) => `<button class="chip" data-act="avsport" data-v="${k}" aria-pressed="${sport === k}">${t}</button>`;
+  const head = `<header class="top" style="justify-content:flex-start">${backBtn()}<h1 style="flex:1;font-size:24px">Ao vivo agora</h1>${freshHtml()}</header>
+    <div class="chips" role="group" aria-label="Esporte">${chip(1, 'Futebol')}${chip(3, 'Tênis')}</div>`;
+  const A = R.aoVivo[sport] || null;
+  if (!A) return head + '<div class="skeleton"></div><div class="skeleton"></div>';
+  const grupos = {};
+  A.games.forEach((g) => { const k = g.competitionId || g.competitionDisplayName; (grupos[k] = grupos[k] || []).push(g); });
+  const meus = campsDosTimes();
+  const temTime = (k) => grupos[k].some(gameIsFav);
+  // Primeiro o campeonato com jogo de time seguido, depois os campeonatos dos times na ordem salva.
+  const prio = (k) => { const i = meus.indexOf(Number(k)); return temTime(k) ? -1 : i >= 0 ? i : Infinity; };
+  const chaves = Object.keys(grupos);
+  const destaque = chaves.filter((k) => prio(k) < Infinity).sort((a, b) => prio(a) - prio(b));
+  const outros = chaves.filter((k) => !destaque.includes(k))
+    .sort((a, b) => ((A.compOf[b] && A.compOf[b].popularityRank) || 0) - ((A.compOf[a] && A.compOf[a].popularityRank) || 0));
+  const bloco = (k) => {
+    const cp = A.compOf[k] || { id: k, name: grupos[k][0].competitionDisplayName || k };
+    const pais = A.pais[cp.countryId];
+    const nome = `${esc(cp.name)}${pais && !String(cp.name).includes(pais) ? ` <small>${esc(pais)}</small>` : ''}`;
+    const jogos = grupos[k].slice().sort((a, b) => (gameIsFav(b) - gameIsFav(a)) || (new Date(a.startTime) - new Date(b.startTime)));
+    return `<div class="sec av-camp"><h2>${Number(k) ? `<a href="#/liga/${Number(k)}">${leagueImg(cp)}${nome}</a>` : nome}</h2><span class="muted">${jogos.length}</span></div><div class="stack">${jogos.map((g) => gameCard(g)).join('')}</div>`;
+  };
+  const total = A.games.length;
+  const resumo = `<p class="hero">${total ? `${total} ${total === 1 ? 'jogo' : 'jogos'} rolando agora${destaque.length ? `, ${destaque.reduce((n, k) => n + grupos[k].length, 0)} nos campeonatos dos seus times` : ''}.` : ''}</p>`;
+  if (!total) return head + '<div class="empty"><b>Nada ao vivo agora</b>Os jogos em andamento aparecem aqui assim que começam.</div>';
+  return `${head}${resumo}
+    ${destaque.length ? `<div class="subhead">Campeonatos dos seus times</div>${destaque.map(bloco).join('')}` : ''}
+    ${outros.length ? `<div class="subhead">${destaque.length ? 'Outros campeonatos' : 'Campeonatos'}</div>${outros.slice(0, 40).map(bloco).join('')}` : ''}`;
 }
 let searchTimer, searchLatest = '';
 function onSearch(value, target, sportFilter, render) {
@@ -1984,7 +2034,7 @@ function parseHash() {
 function renderNav() {
   const r = parseHash();
   const cur = R.mainRoute.replace(/^#\//, '').split('/')[0];
-  const active = (k) => (k === cur || (k === 'explorar' && ['time', 'liga', 'f1'].includes(cur)) ? 'aria-current="page"' : '');
+  const active = (k) => (k === cur || (k === 'explorar' && ['time', 'liga', 'f1'].includes(cur)) || (k === 'agora' && cur === 'aovivo') ? 'aria-current="page"' : '');
   const liveMine = R.home ? R.home.games.filter((g) => g.statusGroup === 3 && gameIsMine(g)).length : 0;
   const item = (k, ic, t, dot) => `<a class="nav-item" href="#/${k}" ${active(k)}>${ICONS[ic]}<span>${t}</span>${dot ? '<i class="nav-dot" aria-label="Ao vivo"></i>' : ''}</a>`;
   const html = `<div class="nav-brand"><img src="icons/favicon-32.png" alt="" width="28" height="28">Tribuna</div>${item('agora', 'now', 'Agora', liveMine > 0)}${item('agenda', 'cal', 'Agenda')}${item('explorar', 'search', 'Explorar')}${item('ajustes', 'gear', 'Ajustes')}`;
@@ -2045,13 +2095,14 @@ function renderMainView() {
   if (v === 'time') return setMain(renderTeam(id));
   if (v === 'liga') return setMain(renderLeague(id));
   if (v === 'f1') return setMain(renderF1());
+  if (v === 'aovivo') return setMain(renderAoVivo(id === 3 ? 3 : 1));
   setMain(renderAgora());
 }
 async function loadMainView() {
   const r = R.mainRoute.replace(/^#\//, '').split('/');
   const v = r[0], id = r[1] ? Number(r[1]) : null;
   if (v === 'agenda') await loadAgenda();
-  else if (v === 'explorar') await loadExLive();
+  else if (v === 'aovivo') await loadAoVivo(id === 3 ? 3 : 1);
   else if (v === 'time') await loadTeam(id);
   else if (v === 'liga') await loadLeague(id);
   else if (v === 'f1') await loadF1Page();
@@ -2239,12 +2290,7 @@ const ACTIONS = {
     t.scrollIntoView({ behavior: suave ? 'smooth' : 'auto', block: 'start' });
     animar(t, 'anim-destaque', 1100);
   },
-  exsport(el) {
-    R.exLive = Number(el.dataset.v);
-    document.querySelectorAll('[data-act="exsport"]').forEach((b) => b.setAttribute('aria-pressed', b === el));
-    const box = $('#ex-live'); box.innerHTML = '<div class="skeleton"></div>'; delete box.dataset.h; R.animEx = true;
-    loadExLive().catch(() => { box.innerHTML = '<div class="banner">Não consegui carregar os jogos ao vivo.</div>'; });
-  },
+  avsport(el) { location.replace('#/aovivo/' + Number(el.dataset.v)); },
   follow(el) {
     const id = Number(el.dataset.id);
     const c = R.known[id] || S.teams.find((t) => t.id === id);

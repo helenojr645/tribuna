@@ -292,6 +292,12 @@ img { display: block; }
 .ch-p { margin-top: 3px; padding-top: 5px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .ch-p .on { color: var(--volt-t); font-weight: 700; }
 @media (min-width: 1000px) { .chave { margin: 4px -24px 0; padding: 4px 24px 18px; scroll-padding-inline: 24px; } .ch-col { flex-basis: 250px; } }
+/* Ao vivo agora */
+.todos-vivo { margin-top: 14px; background: var(--surface); border-radius: 14px; border: 1px solid var(--line); }
+.av-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live, #F2554D); flex: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--live, #F2554D) 22%, transparent); }
+.av-seta { font-size: 22px; line-height: 1; color: var(--muted); }
+.av-camp h2 a { gap: 8px; }
+.av-camp h2 small { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0; text-transform: none; margin-left: 6px; }
 .subhead { font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 20px 0 12px; }
 
 .pitch {

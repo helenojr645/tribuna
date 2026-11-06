@@ -80,6 +80,7 @@ function sondarFontes_() {
     espnWeb: 'https://site.web.api.espn.com/apis/site/v2/sports/soccer/bra.1/scoreboard',
     espnWebTenis: 'https://site.web.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard',
     espnWebF1: 'https://site.web.api.espn.com/apis/site/v2/sports/racing/f1/scoreboard',
+    espnCoreF1: 'https://sports.core.api.espn.com/v2/sports/racing/leagues/f1/events/600057446/competitions/401839121/competitors/5829/statistics',
     openf1: OPENF1 + '/sessions?year=2026&country_name=Mexico',
     jolpica: 'https://api.jolpi.ca/ergast/f1/current/next.json'
   };
@@ -1163,7 +1164,9 @@ function tennisEvents_(g, prev, cur, events, now, t) {
   }
 }
 
-var F1_NAMES = { 'Qualifying': 'Classificação', 'Race': 'Corrida', 'Sprint': 'Sprint', 'Sprint Qualifying': 'Classificação Sprint', 'Sprint Shootout': 'Classificação Sprint' };
+var F1_NAMES = { 'Practice 1': 'Treino Livre 1', 'Practice 2': 'Treino Livre 2', 'Practice 3': 'Treino Livre 3', 'Qualifying': 'Classificação', 'Race': 'Corrida', 'Sprint': 'Sprint', 'Sprint Qualifying': 'Classificação Sprint', 'Sprint Shootout': 'Classificação Sprint' };
+// Treino livre so manda o resultado com os tempos (pedido do Heleno, 06/11/2026); lembrete e largada ficam para as sessoes que valem.
+var F1_TREINO = { 'Practice 1': 1, 'Practice 2': 1, 'Practice 3': 1 };
 var F1_GP = {
   Australia: 'da Austrália', China: 'da China', Japan: 'do Japão', Bahrain: 'do Bahrein', 'Saudi Arabia': 'da Arábia Saudita',
   'United States': 'dos Estados Unidos', Italy: 'da Itália', Monaco: 'de Mônaco', Spain: 'da Espanha', Canada: 'do Canadá',
@@ -1173,6 +1176,7 @@ var F1_GP = {
 };
 
 // Janela curta para a resposta caber na vigia; a ESPN bloqueia os servidores do Google (403).
+var F1_DURACAO = { Race: 2.2, FP1: 1, FP2: 1, FP3: 1, Qual: 1.1, SQ: 0.8, SS: 0.8, Sprint: 1, SR: 1 };
 var F1_ESPN = { FP1: 'Practice 1', FP2: 'Practice 2', FP3: 'Practice 3', Qual: 'Qualifying', Race: 'Race', Sprint: 'Sprint', SR: 'Sprint', SQ: 'Sprint Qualifying', SS: 'Sprint Qualifying' };
 
 function f1Sessions_(now) {
@@ -1186,13 +1190,17 @@ function f1Sessions_(now) {
     if (!ev) return [];
     return ev.competitions.map(function (c) {
       var a = new Date(c.date).getTime();
-      return { session_key: 'e' + c.id, session_name: F1_ESPN[c.type.abbreviation] || c.type.abbreviation, date_start: c.date, date_end: new Date(a + 2 * 3600000).toISOString(), gp_name: ev.name, _espn: c };
+      // A ESPN nao da o fim: duracao tipica de cada sessao; sessao que ela ja fechou acaba agora.
+      var fim = a + (F1_DURACAO[c.type.abbreviation] || 1.1) * 3600000;
+      var st = (c.status && c.status.type) || {};
+      if (st.state === 'post' || /end of session/i.test(st.detail || '')) fim = Math.min(fim, now - 1000);
+      return { session_key: 'e' + c.id, session_name: F1_ESPN[c.type.abbreviation] || c.type.abbreviation, date_start: c.date, date_end: new Date(fim).toISOString(), gp_name: ev.name, _espn: c, _ev: ev.id };
     }).filter(function (x) { var a = new Date(x.date_start).getTime(); return a > now - 12 * 3600000 && a < now + 2 * 3600000; });
   }
 }
 
 // Resultado: OpenF1, depois ESPN. Lista vazia significa que ainda nao saiu.
-function f1Top_(x) {
+function f1Top_(x, now) {
   try {
     if (x._espn) throw new Error('sessao da reserva');
     var res = fetchJson_(OPENF1 + '/session_result?session_key=' + x.session_key).filter(function (r) { return r.position != null; })
@@ -1200,16 +1208,49 @@ function f1Top_(x) {
     if (!res.length) return [];
     var drv = {};
     fetchJson_(OPENF1 + '/drivers?session_key=' + x.session_key).forEach(function (d) { drv[d.driver_number] = d; });
-    return res.map(function (r) { var d = drv[r.driver_number] || {}; return { pos: r.position, last: d.last_name || ('Carro ' + r.driver_number), full: ((d.first_name || '') + ' ' + (d.last_name || '')).trim() }; });
+    return res.map(function (r) {
+      var d = drv[r.driver_number] || {};
+      var dur = [].concat(r.duration).filter(function (v) { return typeof v === 'number'; });
+      var gap = [].concat(r.gap_to_leader).filter(function (v) { return v != null; }).slice(-1)[0];
+      return { pos: r.position, last: d.last_name || ('Carro ' + r.driver_number), full: ((d.first_name || '') + ' ' + (d.last_name || '')).trim(),
+        tempo: dur.length ? volta_(dur[dur.length - 1]) : '', dif: typeof gap === 'number' ? (gap > 0 ? '+' + gap.toFixed(3) : '') : (gap ? String(gap) : '') };
+    });
   } catch (err) {
     var alvo = new Date(x.date_start).getTime();
     var ev = (fetchJson_(ESPN_WEB + '/racing/f1/scoreboard').events || [])[0];
     var c = x._espn || (ev && ev.competitions.filter(function (s) { return Math.abs(new Date(s.date).getTime() - alvo) < 3600000; })[0]);
-    return ((c && c.competitors) || []).slice().sort(function (u, v) { return (u.order || 99) - (v.order || 99); }).map(function (p, i) {
+    var evId = x._ev || (ev && ev.id);
+    var lista = ((c && c.competitors) || []).slice().sort(function (u, v) { return (u.order || 99) - (v.order || 99); });
+    if (!lista.length || !evId) return [];
+    // Tempos da ESPN core: uma rodada so, todos os pilotos juntos.
+    var base = 'https://sports.core.api.espn.com/v2/sports/racing/leagues/f1/events/' + evId + '/competitions/' + c.id + '/competitors/';
+    var resp = [];
+    try { resp = UrlFetchApp.fetchAll(lista.map(function (p) { return { url: base + p.id + '/statistics', muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } }; })); } catch (e2) { resp = []; }
+    var zero = function (v) { return !v || /^[+0:.]+$/.test(v); };
+    var top = lista.map(function (p, i) {
+      var st = {};
+      try {
+        if (resp[i] && resp[i].getResponseCode() === 200) JSON.parse(resp[i].getContentText()).splits.categories.forEach(function (k) { (k.stats || []).forEach(function (s) { st[s.name] = s.displayValue; }); });
+      } catch (e3) {}
       var nome = String(p.athlete.displayName || '');
-      return { pos: i + 1, last: nome.split(' ').slice(-1)[0], full: nome };
+      var dif = st.behindTime || st.gapToLeader || '';
+      return { pos: i + 1, last: nome.split(' ').slice(-1)[0], full: nome, tempo: zero(st.totalTime) ? '' : st.totalTime, dif: zero(dif) ? '' : dif };
     });
+    // Sem o tempo do lider ainda (a ESPN fecha a sessao uns minutos depois): espera ate 45 min, depois vai assim mesmo.
+    if (!top[0].tempo && (now || Date.now()) < new Date(x.date_end).getTime() + 45 * 60000) return [];
+    return top;
   }
+}
+
+function volta_(v) {
+  var m = Math.floor(v / 60), s = (v - m * 60).toFixed(3);
+  if (m >= 60) return Math.floor(m / 60) + ':' + ('0' + (m % 60)).slice(-2) + ':' + ('0' + s).slice(-6);
+  return m ? m + ':' + ('0' + s).slice(-6) : s;
+}
+// "1. Antonelli 1:10.511" no lider; diferenca nos outros. Na corrida o lider vai sem o tempo total.
+function linhaF1_(c, corrida) {
+  var t = c.pos === 1 ? (corrida ? '' : c.tempo) : (c.dif || '');
+  return c.pos + '. ' + c.last + (t ? ' ' + t : '');
 }
 
 function f1GpName_(x) {
@@ -1233,16 +1274,17 @@ function pollF1_(devices, mem, writes, out, now, stale) {
     var cur = { st: state, rem: prev ? prev.rem : 0, done: prev ? prev.done : (state === 'post' ? 1 : 0), t: a };
     var msgs = [];
     var gp = f1GpName_(x);
-    if (!stale && state === 'pre' && !cur.rem && a - now <= 30 * 60000) {
+    var treino = !!F1_TREINO[x.session_name], corrida = x.session_name === 'Race' || x.session_name === 'Sprint';
+    if (!stale && !treino && state === 'pre' && !cur.rem && a - now <= 30 * 60000) {
       cur.rem = 1;
       msgs.push({ rule: 'f1Remind', title: name + ' em ' + Math.max(1, Math.round((a - now) / 60000)) + ' min', body: gp });
     }
-    if (!stale && prev && prev.st === 'pre' && state === 'in') msgs.push({ rule: 'f1Start', title: name + ' começou', body: gp });
+    if (!stale && !treino && prev && prev.st === 'pre' && state === 'in') msgs.push({ rule: 'f1Start', title: name + ' começou', body: gp });
     if (state === 'post' && !cur.done && now < z + 6 * 3600000) {
-      var top = f1Top_(x);
+      var top = f1Top_(x, now);
       if (top.length) {
         cur.done = 1;
-        msgs.push({ rule: 'f1End', title: name + ': ' + gp, body: top.slice(0, 3).map(function (c) { return c.pos + '. ' + c.last; }).join('  '), top: top });
+        msgs.push({ rule: 'f1End', title: name + ': ' + gp, body: top.slice(0, 3).map(function (c) { return linhaF1_(c, corrida); }).join('\n'), top: top, corrida: corrida });
       }
     }
     if (!prev || prev.st !== cur.st || prev.rem !== cur.rem || prev.done !== cur.done) writes[key] = JSON.stringify(cur);
@@ -1254,7 +1296,7 @@ function pollF1_(devices, mem, writes, out, now, stale) {
           m.top.forEach(function (c) {
             var full = plain_(c.full);
             var mine = d.follows.drivers.some(function (n) { return full.indexOf(plain_(n)) >= 0; });
-            if (c.pos > 3 && mine) body += '  ·  ' + c.pos + '. ' + c.last;
+            if (c.pos > 3 && mine) body += '\n' + linhaF1_(c, m.corrida);
           });
         }
         out.push({ dev: d, msg: { title: m.title, body: body, tag: 'f' + a, url: '#/f1' } });

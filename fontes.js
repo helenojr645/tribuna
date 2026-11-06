@@ -369,7 +369,9 @@ window.Fontes = (function () {
     if (!ev) throw new Error('ESPN sem GP');
     return ev.competitions.map((c) => ({
       session_key: 'e' + c.id, session_name: SESSOES_ESPN[c.type.abbreviation] || c.type.abbreviation, date_start: c.date,
-      date_end: new Date(new Date(c.date).getTime() + 2 * 36e5).toISOString(), meeting_key: 'e' + ev.id,
+      // Duracao tipica de cada sessao (a ESPN nao da o fim); sessao que a ESPN ja fechou acaba agora.
+      date_end: new Date(Math.min(new Date(c.date).getTime() + ({ Race: 2.2, FP1: 1, FP2: 1, FP3: 1, Qual: 1.1, SQ: 0.8, SS: 0.8 }[c.type.abbreviation] || 1.1) * 36e5,
+        c.status && c.status.type && (c.status.type.state === 'post' || /end of session/i.test(c.status.type.detail || '')) ? Date.now() - 1000 : Infinity)).toISOString(), meeting_key: 'e' + ev.id,
       gp_name: ev.name, country_name: '', location: ev.shortName || ev.name, circuit_short_name: ''
     }));
   }
@@ -382,6 +384,32 @@ window.Fontes = (function () {
       const n = c.athlete || {};
       const p = String(n.displayName || '').split(' ');
       return { position: i + 1, driver_number: i, driver: { full_name: n.displayName, first_name: p[0], last_name: p.slice(1).join(' ') } };
+    });
+  }
+  // Tempos de cada piloto na sessao (ESPN core, aberta a qualquer site): diferenca para o lider
+  // durante e depois da sessao; tempo do lider, Q1/Q2/Q3, melhor volta e paradas quando a sessao fecha.
+  // A OpenF1 gratis fica bloqueada o fim de semana inteiro de GP enquanto houver sessao rolando.
+  async function f1Tempos(data) {
+    const ev = await f1Evento();
+    const alvo = new Date(data).getTime();
+    const s = ev && ev.competitions.find((c) => Math.abs(new Date(c.date) - alvo) < 36e5);
+    if (!s || !(s.competitors || []).length) return [];
+    const base = `https://sports.core.api.espn.com/v2/sports/racing/leagues/f1/events/${encodeURIComponent(ev.id)}/competitions/${encodeURIComponent(s.id)}/competitors/`;
+    const lista = s.competitors.slice().sort((a, b) => (a.order || 99) - (b.order || 99));
+    const stats = await Promise.all(lista.map((c) => json(`${base}${encodeURIComponent(c.id)}/statistics`, 9000).catch(() => null)));
+    // Mais da metade sem resposta: melhor ficar com a ultima leitura boa do que mostrar so nomes.
+    if (stats.filter((x) => !x).length > lista.length / 2) throw new Error('ESPN: tempos incompletos');
+    const zero = (v) => !v || /^[0:.]+$/.test(v);
+    return lista.map((c, i) => {
+      const st = {};
+      ((stats[i] && stats[i].splits && stats[i].splits.categories) || []).forEach((k) => (k.stats || []).forEach((x) => { st[x.name] = x.displayValue; }));
+      const nome = String((c.athlete && c.athlete.displayName) || '');
+      const dif = st.behindTime || st.gapToLeader || '';
+      return {
+        pos: i + 1, nome, tempo: zero(st.totalTime) ? '' : st.totalTime, dif: zero(dif.replace('+', '')) ? '' : dif,
+        voltas: Number(st.lapsCompleted) || 0, q: [st.qual1TimeMS, st.qual2TimeMS, st.qual3TimeMS].map((v) => (zero(v) ? '' : v)),
+        melhor: zero(st.fastestLap) ? '' : st.fastestLap, paradas: st.pitsTaken != null ? Number(st.pitsTaken) : null
+      };
     });
   }
   async function f1Classificacao() {
@@ -398,5 +426,5 @@ window.Fontes = (function () {
     };
   }
 
-  return { todos, reconciliar, detalhe, tabela, f1Sessoes, f1Resultado, f1Classificacao, porId, mesmoJogo, mesmoNome };
+  return { todos, reconciliar, detalhe, tabela, f1Sessoes, f1Resultado, f1Tempos, f1Classificacao, porId, mesmoJogo, mesmoNome };
 })();

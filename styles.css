@@ -345,6 +345,13 @@ img { display: block; }
 .table tr.me td { background: color-mix(in srgb, var(--volt) 16%, var(--surface)); }
 .table .crest { width: 20px; height: 20px; }
 .bar-team { width: 4px; height: 20px; border-radius: 2px; flex: none; }
+.f1-l { min-height: 52px; }
+.f1-l.me { background: color-mix(in srgb, var(--volt) 14%, transparent); }
+.f1-p { width: 22px; color: var(--muted); font-weight: 700; }
+.f1-t { display: flex; flex-direction: column; align-items: flex-end; text-align: right; flex: none; max-width: 46%; }
+.f1-t b { font-size: 15px; font-weight: 700; }
+.f1-t small { font-size: 12px; color: var(--muted); }
+.f1-nota { font-size: 13px; margin: 8px 0 4px; }
 
 .grid-set { display: grid; gap: 0; background: var(--surface); border-radius: var(--r); padding: 6px 14px; margin-bottom: 16px; }
 .grid-set .gr { display: grid; align-items: center; min-height: 46px; gap: 4px; border-bottom: 1px solid var(--line); font-weight: 600; }

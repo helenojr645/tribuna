@@ -62,6 +62,11 @@ function world() {
       },
       fetchAll(reqs) {
         return reqs.map((q) => {
+          const sc = /sports\.core\.api\.espn\.com.*competitors\/(\w+)\/statistics/.exec(q.url || '');
+          if (sc) {
+            const v = (w.espnStats || {})[sc[1]];
+            return v ? { getResponseCode: () => 200, getContentText: () => JSON.stringify({ splits: { categories: [{ stats: Object.keys(v).map((k) => ({ name: k, displayValue: v[k] })) }] } }) } : { getResponseCode: () => 404, getContentText: () => '' };
+          }
           w.ultimosCab = q.headers;
           const c = w.pushCode;
           if (c === 200) w.pushes.push(1);
@@ -309,17 +314,18 @@ t('F1: lembrete, largada, resultado atrasado e piloto seguido', () => {
   w.register({ follows: { c: [], comp: [], f1: true, drivers: ['Bortoleto'], mute: [] }, rules: { f1Start: true } });
   const a = w.clock + 40 * 60000, z = a + 2 * 36e5;
   w.f1.sessions = [{ session_key: 5, session_name: 'Race', country_name: 'Brazil', date_start: new Date(a).toISOString(), date_end: new Date(z).toISOString() },
-    { session_key: 6, session_name: 'Practice 1', country_name: 'Brazil', date_start: new Date(a).toISOString(), date_end: new Date(z).toISOString() }];
+    { session_key: 6, session_name: 'Practice 1', country_name: 'Brazil', date_start: new Date(a - 5 * 36e5).toISOString(), date_end: new Date(a - 4 * 36e5).toISOString() }];
   assert.deepEqual(w.tick(), [], 'primeira leitura so registra'); w.next(11);
   assert.deepEqual(titles(w.tick()), ['Corrida em 29 min']); w.next(10);
   assert.deepEqual(w.tick(), [], 'lembrete nao repete'); w.next(19);
   assert.deepEqual(titles(w.tick()), ['Corrida começou']); w.next(121);
   assert.deepEqual(w.tick(), [], 'acabou, resultado ainda nao saiu'); w.next();
-  w.f1.results = [1, 2, 3, 4, 5].map((i) => ({ position: i, driver_number: i }));
+  w.f1.results = [1, 2, 3, 4, 5].map((i) => ({ position: i, driver_number: i, duration: 5700 + i * 3.5, gap_to_leader: i === 1 ? 0 : (i - 1) * 3.5 }));
   w.f1.drivers = ['Norris', 'Hamilton', 'Russell', 'Leclerc', 'Bortoleto'].map((n, i) => ({ driver_number: i + 1, first_name: 'X', last_name: n }));
   const m = w.tick();
   assert.deepEqual(titles(m), ['Corrida: GP do Brasil']);
-  assert.ok(m[0].body.includes('1. Norris') && m[0].body.includes('5. Bortoleto'), m[0].body);
+  assert.equal(m[0].body.split('\n')[0], '1. Norris', 'lider da corrida sem tempo total');
+  assert.ok(m[0].body.includes('2. Hamilton +3.500') && m[0].body.includes('5. Bortoleto +14.000'), m[0].body);
   w.next(); assert.deepEqual(w.tick(), [], 'resultado nao repete');
 });
 
@@ -438,14 +444,18 @@ t('F1: OpenF1 fora, ESPN assume sem repetir lembrete', () => {
   assert.deepEqual(titles(w.tick()), ['Corrida em 24 min']); w.next();
   w.fora.openf1 = true;
   const comp = (state, comps) => [{ id: '77', date: new Date(a).toISOString(), type: { abbreviation: 'Race' }, status: { type: { state } }, competitors: comps || [] }];
-  w.espnF1 = { events: [{ name: 'GP do Brasil', competitions: comp('pre') }] };
+  w.espnF1 = { events: [{ id: '600', name: 'GP do Brasil', competitions: comp('pre') }] };
   assert.deepEqual(w.tick(), [], 'lembrete nao repete na troca de fonte');
   w.clock = z + 60000;
   w.store.lastPoll = String(w.clock - 60000);
-  w.espnF1.events[0].competitions = comp('post', [{ order: 2, athlete: { displayName: 'Lewis Hamilton' } }, { order: 1, athlete: { displayName: 'Lando Norris' } }]);
+  w.espnF1.events[0].competitions = comp('post', [{ id: '44', order: 2, athlete: { displayName: 'Lewis Hamilton' } }, { id: '4', order: 1, athlete: { displayName: 'Lando Norris' } }]);
+  w.espnStats = { 4: { lapsCompleted: '56' }, 44: { gapToLeader: '+3.500' } };
+  assert.deepEqual(w.tick(), [], 'ESPN ainda sem o tempo do lider: espera');
+  w.espnStats = { 4: { totalTime: '1:35:16.650', lapsCompleted: '56' }, 44: { behindTime: '+3.500', totalTime: '1:35:20.150' } };
+  w.next();
   const m = w.tick();
   assert.equal(m.length, 1);
-  assert.ok(m[0].body.startsWith('1. Norris'), m[0].body);
+  assert.equal(m[0].body, '1. Norris' + String.fromCharCode(10) + '2. Hamilton +3.500', 'corrida: lider sem tempo total, segundo com a diferenca');
 });
 
 const statsDe = (posse, gol, chutes, esc) => [
@@ -752,6 +762,28 @@ t('cartao no iPhone: bolinhas com as cores dos times; escudo do time seguido vai
   const m2 = w2.tick().filter((x) => x.live);
   assert.equal(m2[0].ic, 'v1/Competitions/113');
   assert.ok(m2[0].title.startsWith('Flamengo'), 'sem cor na fonte, sem bolinha: ' + m2[0].title);
+});
+
+t('F1: treino livre avisa so o resultado, com tempo do lider e diferencas; quali com o melhor Q', () => {
+  const w = world();
+  w.register({ follows: { c: [], comp: [], f1: true, drivers: [], mute: [] }, rules: { f1Start: true } });
+  const a = w.clock + 40 * 60000, z = a + 36e5;
+  w.f1.sessions = [{ session_key: 8, session_name: 'Practice 2', country_name: 'Brazil', date_start: new Date(a).toISOString(), date_end: new Date(z).toISOString() }];
+  assert.deepEqual(w.tick(), [], 'primeira leitura'); w.next(11);
+  assert.deepEqual(w.tick(), [], 'treino nao tem lembrete'); w.next(29);
+  assert.deepEqual(w.tick(), [], 'treino nao avisa que comecou'); w.next(61);
+  w.f1.results = [{ position: 1, driver_number: 12, duration: 70.511, gap_to_leader: 0 }, { position: 2, driver_number: 4, duration: 70.764, gap_to_leader: 0.253 }, { position: 3, driver_number: 1, duration: 70.77, gap_to_leader: 0.259 }];
+  w.f1.drivers = [{ driver_number: 12, last_name: 'Antonelli' }, { driver_number: 4, last_name: 'Norris' }, { driver_number: 1, last_name: 'Verstappen' }];
+  const m = w.tick();
+  assert.deepEqual(titles(m), ['Treino Livre 2: GP do Brasil']);
+  assert.equal(m[0].body, '1. Antonelli 1:10.511\n2. Norris +0.253\n3. Verstappen +0.259');
+  const w2 = world(); w2.register({ follows: { c: [], comp: [], f1: true, drivers: [], mute: [] } });
+  w2.f1.sessions = [{ session_key: 9, session_name: 'Qualifying', country_name: 'Brazil', date_start: new Date(w2.clock - 30 * 60000).toISOString(), date_end: new Date(w2.clock + 30 * 60000).toISOString() }];
+  w2.tick(); w2.next(31);
+  w2.f1.results = [{ position: 1, driver_number: 12, duration: [71.2, 70.9, 70.123], gap_to_leader: [0, 0, 0] }, { position: 2, driver_number: 4, duration: [71.3, 70.95, 70.3], gap_to_leader: [0.1, 0.05, 0.177] }];
+  w2.f1.drivers = w.f1.drivers;
+  const q = w2.tick();
+  assert.equal(q[0].body, '1. Antonelli 1:10.123\n2. Norris +0.177');
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

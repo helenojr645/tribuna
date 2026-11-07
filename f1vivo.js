@@ -6,7 +6,7 @@
 window.F1Vivo = (function () {
   const URL_WS = 'wss://livetiming.formula1.com/signalrcore';
   const RS = '\x1e';
-  const TOPICOS = ['TimingData', 'DriverList', 'SessionInfo', 'SessionStatus', 'TimingAppData', 'LapCount', 'TrackStatus', 'ExtrapolatedClock'];
+  const TOPICOS = ['TimingData', 'DriverList', 'SessionInfo', 'SessionStatus', 'TimingAppData', 'LapCount', 'TrackStatus', 'ExtrapolatedClock', 'Heartbeat'];
   let ws = null, st = {}, at = 0, quer = 0, ping = null, falhas = 0, espera = null, ouvintes = [];
 
   function juntar(alvo, novo) {
@@ -75,11 +75,14 @@ window.F1Vivo = (function () {
     const dl = st.DriverList || {}, app = (st.TimingAppData && st.TimingAppData.Lines) || {};
     const tipo = String((st.SessionInfo && st.SessionInfo.Type) || '');
     const corrida = /race/i.test(tipo);
+    const parteAtual = Number(st.TimingData.SessionPart) || 1;
     const linhas = Object.keys(td).map((n) => {
       const l = td[n] || {}, d = dl[n] || {};
-      const bl = l.BestLapTimes ? Object.keys(l.BestLapTimes).sort().map((k) => (l.BestLapTimes[k] && l.BestLapTimes[k].Value) || '') : [];
+      const bl = l.BestLapTimes ? [0, 1, 2].map((i) => (l.BestLapTimes[i] && l.BestLapTimes[i].Value) || '') : [];
       const parte = bl.filter(Boolean).length;
-      const statsQ = l.Stats ? l.Stats[Object.keys(l.Stats).sort().slice(-1)[0]] : null;
+      // Diferenca da parte atual do quali (Q1/Q2/Q3); vazia, vale a ultima parte com valor.
+      const sq = l.Stats ? [0, 1, 2].map((i) => l.Stats[i]).filter(Boolean) : [];
+      const statsQ = l.Stats ? ((l.Stats[parteAtual - 1] && l.Stats[parteAtual - 1].TimeDiffToFastest) ? l.Stats[parteAtual - 1] : sq.filter((x) => x.TimeDiffToFastest).slice(-1)[0]) : null;
       let dif = corrida ? (l.GapToLeader || '') : (l.TimeDiffToFastest || (statsQ && statsQ.TimeDiffToFastest) || '');
       if (corrida && !/^\+/.test(dif)) dif = volta(dif);
       const stints = app[n] && app[n].Stints ? Object.values(app[n].Stints) : [];
@@ -110,15 +113,16 @@ window.F1Vivo = (function () {
       resta = Math.max(0, resta);
     }
     const bandeira = { 1: '', 2: 'Bandeira amarela', 4: 'Safety car', 5: 'Bandeira vermelha', 6: 'Safety car virtual', 7: 'Fim do safety car virtual' }[ts && ts.Status] || '';
-    return { resta, volta: lc && lc.CurrentLap ? `Volta ${lc.CurrentLap}${lc.TotalLaps ? ' de ' + lc.TotalLaps : ''}` : '', bandeira, acabou: !!(ss && /Finished|Finalised|Ends/i.test(ss.Status || '')) };
+    return { resta, anda: !!(c && c.Extrapolating), volta: lc && lc.CurrentLap ? `Volta ${lc.CurrentLap}${lc.TotalLaps ? ' de ' + lc.TotalLaps : ''}` : '', bandeira, acabou: !!(ss && /Finished|Finalised|Ends/i.test(ss.Status || '')) };
   }
   // Retrato unico (sessao recem-terminada): abre, pega o estado e fecha. A conexao aberta e reaproveitada.
   function retrato(ms) {
     if (at && Date.now() - at < 30000) return Promise.resolve(true);
     return new Promise((res) => {
       const ja = !!quer;
-      quer = quer || Date.now();
-      const fim = (ok) => { ouvintes = ouvintes.filter((f) => f !== ouve); clearTimeout(t); if (!ja) parar(); res(ok); };
+      const meu = quer = quer || Date.now();
+      // So desliga se ninguem (manter ou outro retrato) pediu a conexao depois.
+      const fim = (ok) => { ouvintes = ouvintes.filter((f) => f !== ouve); clearTimeout(t); if (!ja && quer === meu) parar(); res(ok); };
       const ouve = () => { if (st.TimingData) fim(true); };
       const t = setTimeout(() => fim(false), ms || 6000);
       ouvintes.push(ouve);

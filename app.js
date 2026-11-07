@@ -1501,7 +1501,8 @@ function f1Weekend(ev) {
 function f1Situacao(data) {
   const x = F1Vivo.situacao(data);
   if (!x) return '';
-  const rel = x.resta != null && !x.volta ? `<span class="f1-rel tn" data-fim="${Date.now() + x.resta}">${fmtResta(x.resta)}</span>` : '';
+  // Relogio parado (bandeira vermelha) fica fixo; andando, conta sozinho a cada segundo.
+  const rel = x.resta != null && !x.volta ? `<span class="f1-rel tn"${x.anda ? ` data-fim="${Date.now() + x.resta}"` : ''}>${fmtResta(x.resta)}${x.anda ? '' : ' (relógio parado)'}</span>` : '';
   const partes = [x.volta ? `<span class="tn">${esc(x.volta)}</span>` : '', rel, x.bandeira ? `<b class="f1-band">${esc(x.bandeira)}</b>` : ''].filter(Boolean);
   return partes.length ? `<p class="f1-sit">${partes.join(' · ')}</p>` : '';
 }

@@ -352,6 +352,9 @@ img { display: block; }
 .f1-t b { font-size: 15px; font-weight: 700; }
 .f1-t small { font-size: 12px; color: var(--muted); }
 .f1-nota { font-size: 13px; margin: 8px 0 4px; }
+.f1-sit { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+.f1-band { color: #FFD60A; font-weight: 700; }
+:root[data-tema="claro"] .f1-band { color: #9A6B00; }
 
 .grid-set { display: grid; gap: 0; background: var(--surface); border-radius: var(--r); padding: 6px 14px; margin-bottom: 16px; }
 .grid-set .gr { display: grid; align-items: center; min-height: 46px; gap: 4px; border-bottom: 1px solid var(--line); font-weight: 600; }

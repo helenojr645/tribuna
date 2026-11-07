@@ -1372,7 +1372,11 @@ async function loadF1Result(key, data, vivo) {
   const ttl = vivo ? 2e4 : recente ? 2 * 6e4 : 30 * 6e4;
   if (c && c.list.length && Date.now() - c.at < ttl) return;
   let list = [], fonte = 'ESPN';
-  try { list = await Fontes.f1Tempos(data); } catch (_) {}
+  // Cronometragem oficial primeiro: sessao recem-terminada ainda esta no ar ali, com o tempo de todos.
+  if (recente && window.F1Vivo) {
+    try { if (await F1Vivo.retrato(6000)) { const l = F1Vivo.lista(data); if (l) { list = l; fonte = 'cronometragem oficial da F1'; } } } catch (_) {}
+  }
+  if (!list.length) { try { list = await Fontes.f1Tempos(data); } catch (_) {} }
   // Sem o tempo do lider (a ESPN so fecha a sessao horas depois), a OpenF1 completa quando abrir.
   if (!vivo && !String(key).startsWith('e') && !(list[0] && list[0].tempo)) {
     try {
@@ -1393,6 +1397,7 @@ function equipeF1(nome) {
   const t = d && d.Constructors && d.Constructors[0];
   return t ? { equipe: t.name, cor: F1_TEAMS[t.constructorId] || '' } : { equipe: '', cor: '' };
 }
+const PNEU = { SOFT: 'macio', MEDIUM: 'médio', HARD: 'duro', INTERMEDIATE: 'intermediário', WET: 'chuva' };
 function f1Tabela(list, ab) {
   const tipo = ['Race', 'Sprint', 'SR'].includes(ab) ? 'corrida' : ['Qual', 'SQ', 'SS'].includes(ab) ? 'quali' : 'treino';
   const lider = list[0] || {};
@@ -1409,10 +1414,10 @@ function f1Tabela(list, ab) {
     } else if (tipo === 'corrida') {
       const atras = lider.voltas && r.voltas && r.voltas < lider.voltas ? lider.voltas - r.voltas : 0;
       main = r.pos === 1 ? (r.tempo || 'Líder') : (r.dif && !/^\+?0[:.]0/.test(r.dif) ? r.dif : atras ? `+${atras} volta${atras > 1 ? 's' : ''}` : r.dif);
-      sub = [r.melhor ? `volta mais rápida ${r.melhor}` : '', r.paradas != null ? `${r.paradas} parada${r.paradas === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+      sub = [r.box ? 'nos boxes' : '', PNEU[r.pneu] || '', r.melhor ? `volta mais rápida ${r.melhor}` : '', r.paradas != null ? `${r.paradas} parada${r.paradas === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
     } else {
       main = r.pos === 1 ? (r.tempo || 'mais rápido') : (r.dif || r.tempo);
-      sub = r.voltas ? `${r.voltas} voltas` : '';
+      sub = [r.box ? 'nos boxes' : '', r.voltas ? `${r.voltas} voltas` : '', PNEU[r.pneu] || ''].filter(Boolean).join(' · ');
     }
     return `<div class="item f1-l${followsDriver(r.nome) ? ' me' : ''}"><span class="tn f1-p">${r.pos || '-'}</span><i class="bar-team" style="background:${eq.cor && /^#[0-9a-f]{6}$/i.test(eq.cor) ? eq.cor : '#7D8891'}" aria-hidden="true"></i><div class="grow"><div class="t1">${esc(r.nome)}</div><div class="t2">${esc(eq.equipe)}</div></div><span class="f1-t"><b class="tn">${esc(main || '')}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</span></div>`;
   }).join('')}</div>`;
@@ -1427,9 +1432,11 @@ async function loadF1Page() {
   const ev = cur.events[0];
   const sel = ev && f1SelectedSession(ev);
   const vivo = ev && ev.competitions.find((s) => s.status.type.state === 'in');
+  const oficial = vivo && window.F1Vivo && !(S.spoiler && !R.reveal.has('f1' + vivo.id));
+  if (oficial) F1Vivo.manter();
   await Promise.all([
     sel ? loadF1Result(sel.id, sel.date).catch(() => { R.f1Res[sel.id] = R.f1Res[sel.id] || { at: 0, list: [], failed: true }; }) : null,
-    vivo && !(S.spoiler && !R.reveal.has('f1' + vivo.id)) ? loadF1Result(vivo.id, vivo.date, true).catch(() => {}) : null
+    oficial && !F1Vivo.lista(vivo.date) ? loadF1Result(vivo.id, vivo.date, true).catch(() => {}) : null
   ]);
   await loadF1Static(true);
   R.f1Sessions = sessions;
@@ -1476,7 +1483,8 @@ function f1Weekend(ev) {
     const esconde = S.spoiler && !R.reveal.has('f1' + liveNow.id);
     results += `<div class="sec"><h2>${esc(F1_NAMES[liveNow.type.abbreviation] || liveNow.type.abbreviation)} ao vivo</h2></div>`;
     if (esconde) results += `<button class="btn" data-act="revealf1" data-v="${esc(liveNow.id)}">Mostrar tempos</button>`;
-    else if (dv && dv.list.length) results += `${f1Tabela(dv.list, liveNow.type.abbreviation)}<p class="muted f1-nota">Posições e diferenças da ESPN, atualizadas a cada 20 a 30 segundos; podem vir com algum atraso.</p>`;
+    else if (window.F1Vivo && F1Vivo.lista(liveNow.date)) results += `${f1Situacao(liveNow.date)}${f1Tabela(F1Vivo.lista(liveNow.date), liveNow.type.abbreviation)}<p class="muted f1-nota">Cronometragem oficial da F1, ao vivo.</p>`;
+    else if (dv && dv.list.length) results += `${f1Tabela(dv.list, liveNow.type.abbreviation)}<p class="muted f1-nota">Cronometragem oficial fora do ar agora; posições e diferenças da ESPN, que podem vir com atraso.</p>`;
     else results += `<p class="muted f1-nota">Os tempos aparecem aqui assim que a fonte publicar a primeira volta.</p>`;
   }
   if (sel) {
@@ -1489,6 +1497,26 @@ function f1Weekend(ev) {
     else results += f1Tabela(data.list, sel.type.abbreviation) + (data.fonte ? `<p class="muted f1-nota">Fonte: ${esc(data.fonte)}.</p>` : '');
   }
   return `<div class="panel" style="padding-top:10px"><h3 style="margin:4px 0 2px;font-size:18px">${esc(ev.name)}</h3><p style="margin:0 0 4px;font-size:13px;color:var(--muted)">${esc(ev.circuit || '')}</p>${rows}</div>${results}`;
+}
+function f1Situacao(data) {
+  const x = F1Vivo.situacao(data);
+  if (!x) return '';
+  const rel = x.resta != null && !x.volta ? `<span class="f1-rel tn" data-fim="${Date.now() + x.resta}">${fmtResta(x.resta)}</span>` : '';
+  const partes = [x.volta ? `<span class="tn">${esc(x.volta)}</span>` : '', rel, x.bandeira ? `<b class="f1-band">${esc(x.bandeira)}</b>` : ''].filter(Boolean);
+  return partes.length ? `<p class="f1-sit">${partes.join(' · ')}</p>` : '';
+}
+function fmtResta(ms) {
+  const t = Math.max(0, Math.round(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
+  return `faltam ${h ? h + ':' + String(m).padStart(2, '0') : m}:${String(s).padStart(2, '0')}`;
+}
+// Cronometragem oficial: redesenha a tela da F1 no maximo 1x por segundo enquanto chegam voltas.
+if (window.F1Vivo) {
+  let pend = null;
+  F1Vivo.aoMudar(() => {
+    if (pend || document.hidden || parseHash().view !== 'f1' || R.f1Tab !== 'fds') return;
+    pend = setTimeout(() => { pend = null; if (parseHash().view === 'f1') setMain(renderF1()); }, 1000);
+  });
+  setInterval(() => { document.querySelectorAll('.f1-rel[data-fim]').forEach((e) => { e.textContent = fmtResta(Number(e.dataset.fim) - Date.now()); }); }, 1000);
 }
 function fmtLap(v) {
   if (typeof v !== 'number') return '';

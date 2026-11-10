@@ -5,3 +5,5 @@ robo/dist/
 __pycache__/
 _teste/
 CLAUDE.md
+vigia/
+.claude/

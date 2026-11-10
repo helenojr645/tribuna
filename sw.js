@@ -1,7 +1,10 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
 const VERSION = 'tribuna-25';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'fontes.js', 'f1vivo.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
-const IMG_CACHE = 'tribuna-img';
+// Escudos e logos: ate 300, por ate 30 dias. O nome mudou de 'tribuna-img' para jogar fora as
+// respostas opacas antigas (404/5xx guardados para sempre).
+const IMG_CACHE = 'tribuna-img-2';
+const IMG_MAX = 300, IMG_DIAS = 30;
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -19,12 +22,20 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
   if (url.origin === self.location.origin) {
-    // Rede primeiro para o app nao ficar preso em versao velha; cache so sem internet.
+    // Rede primeiro para o app nao ficar preso em versao velha. Rede lenta (3 s): serve o cache
+    // e a resposta da rede atualiza o cache por tras. Sem internet: cache.
+    const rede = fetch(e.request).then(async (res) => {
+      if (res.ok) await (await caches.open(VERSION)).put(e.request, res.clone());
+      return res;
+    });
+    e.waitUntil(rede.then(() => {}, () => {}));
     e.respondWith((async () => {
+      const prazo = new Promise((res) => setTimeout(() => res('prazo'), 3000));
       try {
-        const res = await fetch(e.request);
-        if (res.ok) (await caches.open(VERSION)).put(e.request, res.clone());
-        return res;
+        const r = await Promise.race([rede, prazo]);
+        if (r !== 'prazo') return r;
+        const hit = await caches.match(e.request);
+        return hit || await rede;
       } catch (_) {
         return (await caches.match(e.request)) || (await caches.match('index.html'));
       }
@@ -32,16 +43,41 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   if (url.hostname === 'imagecache.365scores.com' || url.hostname === 'images.fotmob.com' || url.hostname === 'a.espncdn.com') {
-    e.respondWith((async () => {
-      const cache = await caches.open(IMG_CACHE);
-      const hit = await cache.match(e.request);
-      if (hit) return hit;
-      const res = await fetch(e.request);
-      if (res.ok || res.type === 'opaque') cache.put(e.request, res.clone());
-      return res;
-    })());
+    e.respondWith(imagem(e));
   }
 });
+
+async function imagem(e) {
+  const cache = await caches.open(IMG_CACHE);
+  const hit = await cache.match(e.request);
+  const at = hit ? Number(hit.headers.get('x-tribuna-at')) || 0 : 0;
+  if (hit && Date.now() - at < IMG_DIAS * 864e5) return hit;
+  let res;
+  // 365Scores e ESPN liberam CORS: pedindo assim da para ver o status e nao guardar 404/5xx.
+  // A FotMob nao libera: busca normal, que volta opaca e por isso nao e guardada.
+  const cors = new URL(e.request.url).hostname !== 'images.fotmob.com';
+  try {
+    res = await fetch(cors ? new Request(e.request.url, { mode: 'cors', credentials: 'omit' }) : e.request);
+  } catch (err) {
+    if (hit) return hit;
+    if (!cors) throw err;
+    res = await fetch(e.request);
+  }
+  if (res.ok && res.type !== 'opaque') {
+    const corpo = await res.clone().blob();
+    const h = new Headers(res.headers);
+    h.set('x-tribuna-at', String(Date.now()));
+    e.waitUntil(cache.put(e.request, new Response(corpo, { status: res.status, statusText: res.statusText, headers: h })).then(() => (++guardadas % 25 === 1 ? aparar(cache) : null)).catch(() => {}));
+  } else if (hit) return hit;
+  return res;
+}
+let guardadas = 0;
+// Passou do limite (conferido a cada 25 imagens guardadas): apaga os mais antigos (o cache lista na ordem em que guardou).
+async function aparar(cache) {
+  const keys = await cache.keys();
+  if (keys.length <= IMG_MAX) return;
+  await Promise.all(keys.slice(0, keys.length - IMG_MAX).map((k) => cache.delete(k)));
+}
 
 self.addEventListener('push', (e) => {
   let m = {};

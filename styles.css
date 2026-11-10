@@ -634,6 +634,20 @@ body { overflow-x: clip; }
 }
 .legenda-auto { font-size: 13px; margin: 8px 2px 0; line-height: 1.5; }
 .legenda-auto svg { width: 15px; height: 15px; vertical-align: -3px; }
+/* Sininhos com legenda (10/11/2026): "Avisos" e "Cartao ao vivo" lado a lado se confundiam sem texto. */
+.icon-btn.icon-lab { width: auto; min-width: 48px; height: auto; min-height: 48px; padding: 4px 4px 3px; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.icon-lab svg { width: 20px; height: 20px; }
+.icon-lab .lab { font-size: 11px; font-weight: 600; line-height: 1.15; max-width: 50px; text-align: center; white-space: normal; letter-spacing: -.01em; }
+.icon-lab.on { background: color-mix(in srgb, var(--volt) 14%, transparent); }
+.capa-bar .icon-lab { color: rgba(255, 255, 255, .78); }
+.capa-bar .icon-lab.on { color: #fff; background: rgba(255, 255, 255, .16); }
+/* Em Ajustes a linha e estreita: o par vai numa segunda linha, com icone e texto lado a lado. */
+.item.segue { flex-wrap: wrap; row-gap: 6px; }
+.par-avisos { order: 9; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; padding-left: 36px; }
+.par-avisos .icon-btn.icon-lab { flex-direction: row; gap: 6px; min-height: 44px; padding: 0 12px; border-radius: 22px; box-shadow: inset 0 0 0 1px var(--line); }
+.par-avisos .icon-lab.on { box-shadow: none; }
+.par-avisos .icon-lab .lab { max-width: none; white-space: nowrap; font-size: 13px; }
+@media (max-width: 359px) { .par-avisos { padding-left: 0; } }
 
 /* ---------- Modo claro (04/11/2026): escolhido em Ajustes ou seguindo o aparelho ---------- */
 :root[data-tema="claro"] {

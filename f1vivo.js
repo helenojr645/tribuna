@@ -7,7 +7,7 @@ window.F1Vivo = (function () {
   const URL_WS = 'wss://livetiming.formula1.com/signalrcore';
   const RS = '\x1e';
   const TOPICOS = ['TimingData', 'DriverList', 'SessionInfo', 'SessionStatus', 'TimingAppData', 'LapCount', 'TrackStatus', 'ExtrapolatedClock', 'Heartbeat'];
-  let ws = null, st = {}, at = 0, quer = 0, ping = null, falhas = 0, espera = null, ouvintes = [];
+  let ws = null, st = {}, at = 0, quer = 0, ping = null, falhas = 0, espera = null, ouvintes = [], ultimaMsg = 0;
 
   function juntar(alvo, novo) {
     if (novo == null || typeof novo !== 'object') return novo;
@@ -26,8 +26,10 @@ window.F1Vivo = (function () {
     let primeira = true;
     try { ws = new WebSocket(URL_WS); } catch (_) { ws = null; reabrir(); return; }
     const eu = ws;
-    eu.onopen = () => eu.send(JSON.stringify({ protocol: 'json', version: 1 }) + RS);
+    ultimaMsg = Date.now();
+    eu.onopen = () => { ultimaMsg = Date.now(); eu.send(JSON.stringify({ protocol: 'json', version: 1 }) + RS); };
     eu.onmessage = (m) => {
+      ultimaMsg = Date.now();
       String(m.data).split(RS).forEach((p) => {
         if (!p) return;
         let o; try { o = JSON.parse(p); } catch (_) { return; }
@@ -53,7 +55,18 @@ window.F1Vivo = (function () {
   }
   // Liga enquanto alguem pedir (tela da F1 aberta); desliga 60 s depois do ultimo pedido.
   function manter() { quer = Date.now(); conectar(); }
-  setInterval(() => { if (quer && (Date.now() - quer > 60000 || document.hidden)) parar(); }, 5000);
+  setInterval(() => {
+    if (quer && (Date.now() - quer > 60000 || document.hidden)) { parar(); return; }
+    // No iOS, ao voltar do segundo plano, o WebSocket pode seguir "aberto" mas morto: 20 s sem nada
+    // (dado, ping do servidor ou retrato) fecha e reconecta.
+    if (ws && Date.now() - ultimaMsg > 20000) {
+      const w = ws; ws = null; clearInterval(ping);
+      try { w.close(); } catch (_) {}
+      conectar();
+    }
+  }, 5000);
+  // App foi para o segundo plano: desliga na hora (o iOS congela a conexao sem fechar).
+  document.addEventListener('visibilitychange', () => { if (document.hidden && quer) parar(); });
   function parar() { quer = 0; clearTimeout(espera); espera = null; clearInterval(ping); if (ws) { const w = ws; ws = null; try { w.close(); } catch (_) {} } }
 
   // Sessao do retrato em UTC (StartDate vem na hora local da pista).

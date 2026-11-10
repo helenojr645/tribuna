@@ -9,12 +9,14 @@ const code = readFileSync(new URL('./dist/Code.js', import.meta.url), 'utf8');
 function world() {
   const store = {};
   const w = { games: [], details: {}, f1: { sessions: [], results: [], drivers: [] }, fora: {}, fm: [], ev: [], ten: [], espnF1: { events: [] }, pushes: [], pushCode: 200, failApi: false, clock: Date.parse('2026-11-04T22:00:00Z'), detailFail: false };
+  // Conta as chamadas a Properties (cota diaria de leitura/escrita).
+  w.calls = { get: 0, getAll: 0, set: 0, del: 0 };
   const props = {
-    getProperty: (k) => (k in store ? store[k] : null),
-    setProperty: (k, v) => { store[k] = String(v); },
-    setProperties: (o) => { Object.entries(o).forEach(([k, v]) => { store[k] = String(v); }); },
-    getProperties: () => ({ ...store }),
-    deleteProperty: (k) => { delete store[k]; },
+    getProperty: (k) => { w.calls.get++; return k in store ? store[k] : null; },
+    setProperty: (k, v) => { w.calls.set++; store[k] = String(v); },
+    setProperties: (o) => { w.calls.set++; Object.entries(o).forEach(([k, v]) => { store[k] = String(v); }); },
+    getProperties: () => { w.calls.getAll++; return { ...store }; },
+    deleteProperty: (k) => { w.calls.del++; delete store[k]; },
     getKeys: () => Object.keys(store)
   };
   const ok = (body) => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify(body) });
@@ -44,7 +46,10 @@ function world() {
         const dono = url.includes('365scores') ? 's365' : url.includes('fotmob') ? 'fotmob' : url.includes('espn') ? 'espn' : url.includes('openf1') ? 'openf1' : '';
         if (w.fora[dono]) throw new Error(dono + ' fora');
         if (url.includes('matchDetails')) return ok({ content: w.fmDet || {} });
-        if (url.includes('fotmob')) return ok({ leagues: [{ primaryId: 268, name: 'Série A', matches: w.fm }] });
+        if (url.includes('fotmob')) {
+          const dia = (url.match(/date=(\d+)/) || [])[1];
+          return ok({ leagues: [{ primaryId: 268, name: 'Série A', matches: w.fmPorDia ? (w.fmPorDia[dia] || []) : w.fm }] });
+        }
         if (url.includes('soccer/all')) return ok({ events: w.ev });
         if (url.includes('/tennis/')) return ok({ events: url.includes('/atp/') ? w.ten : [] });
         if (url.includes('racing/f1')) return ok(w.espnF1);
@@ -741,7 +746,8 @@ t('segunda leitura no mesmo minuto: gol no meio do minuto sai na hora; sem jogo 
   dormiu = false; w.onSleep = () => { dormiu = true; };
   w.tick();
   assert.ok(!dormiu, 'sem jogo ao vivo nao dorme');
-  assert.ok(Number(w.store.uso.split('|')[1]) >= 0, 'soma o uso do dia');
+  // Formato novo (baldes por hora, item 9): o status segue com usoMin.
+  assert.ok(w.ctx.status_().usoMin >= 0 && typeof JSON.parse(w.store.uso) === 'object', 'soma o uso do dia');
 });
 
 t('cartao no iPhone: bolinhas com as cores dos times; escudo do time seguido vai junto (PC)', () => {
@@ -784,6 +790,248 @@ t('F1: treino livre avisa so o resultado, com tempo do lider e diferencas; quali
   w2.f1.drivers = w.f1.drivers;
   const q = w2.tick();
   assert.equal(q[0].body, '1. Antonelli 1:10.123\n2. Norris +0.177');
+});
+
+// ---------- Correcoes de 10/11/2026 (um cenario por item) ----------
+
+t('item 1: gol anulado pelo VAR some da memoria; o gol seguinte sai com o autor certo', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [{ id: 9, athleteId: 9, shortName: 'Pedro' }, { id: 10, athleteId: 10, shortName: 'Arrasca' }], stages: [] };
+  w.tick(); w.next();
+  score(g, 1, 0); w.details[7].events = [goal(1, 20, 9)];
+  assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!']); w.next();
+  score(g, 0, 0); w.details[7].events = [];
+  assert.deepEqual(titles(w.tick()), ['Gol anulado']); w.next();
+  score(g, 1, 0); w.details[7].events = [goal(1, 30, 10)];
+  const m = w.tick();
+  assert.deepEqual(titles(m), ['GOL do Flamengo!']);
+  assert.ok(m[0].body.includes("Arrasca 30'"), 'gol novo com o autor: ' + m[0].body);
+  w.next(); assert.deepEqual(w.tick(), [], 'nao repete');
+  w.next(); score(g, 2, 0); w.details[7].events.push(goal(1, 40, 9));
+  const m2 = w.tick();
+  assert.ok(m2.length === 1 && m2[0].body.includes("Pedro 40'") && !m2[0].body.includes('Arrasca'), 'autor do gol seguinte: ' + JSON.stringify(titles(m2)) + ' ' + (m2[0] && m2[0].body));
+});
+
+t('item 2: reserva aceita gol anulado repetido em 2 leituras e 3 min depois da troca; atraso logo apos a troca nao vira anulado', () => {
+  // Anulacao real na reserva.
+  let w = world(); w.register(); let g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora.s365 = true; w.fm = [fmJogo('Flamengo', 'Grêmio', 0, 0, g.startTime)];
+  assert.deepEqual(w.tick(), [], 'troca de fonte'); w.next();
+  w.fm[0].home.score = 1;
+  assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!']); w.next();
+  w.fm[0].home.score = 0;
+  assert.deepEqual(w.tick(), [], '1a leitura do placar menor: espera'); w.next();
+  assert.deepEqual(titles(w.tick()), ['Gol anulado'], '2a leitura, 3 min depois da troca');
+  w.next(); w.fm[0].home.score = 1;
+  assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!'], 'gol seguinte vale');
+  // Reserva um lance atras logo que assume: nada.
+  w = world(); w.register(); g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  score(g, 1, 0); assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!']); w.next();
+  w.fora.s365 = true; w.fm = [fmJogo('Flamengo', 'Grêmio', 0, 0, g.startTime)];
+  let todos = [];
+  for (let i = 0; i < 2; i++) { todos = todos.concat(w.tick()); w.next(); }
+  w.fm[0].home.score = 1; todos = todos.concat(w.tick());
+  assert.deepEqual(titles(todos), [], 'reserva atrasada nao vira gol anulado');
+});
+
+t('item 3: jogo suspenso, abandonado ou adiado nao vira "Fim de jogo" nem placar falso (365 e ESPN)', () => {
+  let w = world(); w.register(); let g = foot({ statusGroup: 3 }); score(g, 1, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  g.statusGroup = 4; g.statusText = 'Abandonado';
+  let m = w.tick();
+  assert.deepEqual(titles(m), ['Jogo abandonado']);
+  assert.equal(m[0].body, 'Parou em Flamengo 1 x 0 Grêmio');
+  // Adiado antes de comecar (2 -> 4): sem placar.
+  w = world(); w.register(); g = foot({ startTime: new Date(Date.parse('2026-11-04T23:30:00Z')).toISOString() }); w.games = [g];
+  w.tick(); w.next();
+  g.statusGroup = 4; g.statusText = 'Adiado';
+  m = w.tick();
+  assert.deepEqual(titles(m), ['Jogo adiado']);
+  assert.ok(!/\d x \d/.test(m[0].body), 'sem placar: ' + m[0].body);
+  // Cartao de quem acompanha: titulo sem "0 x 0".
+  w = world(); g = foot({ startTime: new Date(Date.parse('2026-11-04T23:30:00Z')).toISOString() }); w.games = [g];
+  acompanhar(w, 'main', g); w.tick(); w.next();
+  g.statusGroup = 4; g.statusText = 'Adiado';
+  m = w.tick();
+  assert.equal(m[0].title, 'Flamengo x Grêmio · Adiado');
+  assert.ok(semLiga(m[0]).startsWith('Jogo adiado'), m[0].body);
+  // Reserva ESPN: STATUS_ABANDONED/STATUS_POSTPONED vem com state "post" e nao e "Fim".
+  const espn = (state, name, sh, sa) => [{ date: g.startTime, status: { type: { state, name, description: '' } }, competitions: [{ competitors: [{ homeAway: 'home', score: String(sh), team: { displayName: 'Flamengo' } }, { homeAway: 'away', score: String(sa), team: { displayName: 'Gremio' } }] }] }];
+  w = world(); w.register(); g = foot({ statusGroup: 3 }); score(g, 1, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora.s365 = true; w.fora.fotmob = true;
+  w.ev = espn('in', 'STATUS_SECOND_HALF', 1, 0); assert.deepEqual(w.tick(), []); w.next();
+  w.ev = espn('post', 'STATUS_ABANDONED', 1, 0);
+  assert.deepEqual(titles(w.tick()), ['Jogo abandonado'], 'ESPN abandonado');
+  w = world(); w.register(); g = foot({ startTime: new Date(Date.parse('2026-11-04T23:30:00Z')).toISOString() }); w.games = [g];
+  w.tick(); w.next();
+  w.fora.s365 = true; w.fora.fotmob = true;
+  w.ev = espn('pre', 'STATUS_SCHEDULED', 0, 0); assert.deepEqual(w.tick(), []); w.next();
+  w.ev = espn('post', 'STATUS_POSTPONED', 0, 0);
+  m = w.tick();
+  assert.deepEqual(titles(m), ['Jogo adiado'], 'ESPN adiado');
+  assert.ok(!/\d x \d/.test(m[0].body), m[0].body);
+});
+
+t('item 4: fim com penaltis e com prorrogacao', () => {
+  let w = world(); w.register(); let g = foot({ statusGroup: 3 }); score(g, 1, 1); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  g.statusGroup = 4; g.statusText = 'Pós-pênaltis'; g.shortStatusText = 'Pós-pênaltis';
+  g.homeCompetitor = { ...g.homeCompetitor, penaltyScore: 4, isWinner: true }; g.awayCompetitor = { ...g.awayCompetitor, penaltyScore: 3 };
+  let m = w.tick();
+  assert.deepEqual(titles(m), ['Fim de jogo']);
+  assert.equal(m[0].body, 'Flamengo 1 x 1 Grêmio (Flamengo vence nos pênaltis 4 x 3)');
+  w = world(); w.register(); g = foot({ statusGroup: 3 }); score(g, 2, 1); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  g.statusGroup = 4; g.statusText = 'Pós-prorrogação';
+  m = w.tick();
+  assert.equal(m[0].body, 'Flamengo 2 x 1 Grêmio (após prorrogação)');
+  // Cartao de quem acompanha: so a etapa "Pênaltis" (formato do /game/).
+  w = world(); g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g]; acompanhar(w, 'main', g);
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  g.statusGroup = 4; g.statusText = 'Pós-pênaltis'; g.stages = [{ id: 11, name: 'Pênaltis', shortName: 'Pen.', homeCompetitorScore: 2, awayCompetitorScore: 4 }];
+  m = w.tick();
+  assert.ok(semLiga(m[0]).startsWith('Fim de jogo · Grêmio vence nos pênaltis 4 x 2'), m[0].body);
+});
+
+t('item 5: gol contra sai como "(contra)" e nao desloca o autor do gol seguinte', () => {
+  const contra = (comp, min, player) => ({ ...goal(comp, min, player), eventType: { id: 1, name: 'Gol', subTypeId: 2, subTypeName: 'Gol Contra' } });
+  const membros = [{ id: 9, athleteId: 9, competitorId: 1, shortName: 'Zagueiro' }, { id: 10, athleteId: 10, competitorId: 1, shortName: 'Pedro' }];
+  // Formato real do 365: o lance vem no time que ganhou o gol; o jogador e do outro.
+  // E o formato invertido (lance no time do jogador): os dois tem de dar o mesmo resultado.
+  [2, 1].forEach((cidLance) => {
+    const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+    w.details[7] = { events: [], members: membros, stages: [], homeCompetitor: { id: 1 }, awayCompetitor: { id: 2 } }; w.tick(); w.next();
+    score(g, 0, 1); w.details[7].events = [contra(cidLance, 20, 9)];
+    const m = w.tick();
+    assert.deepEqual(titles(m), ['GOL do Grêmio!'], 'lance no time ' + cidLance);
+    assert.ok(m[0].body.includes("Zagueiro (contra) 20'"), m[0].body);
+    w.next(); score(g, 1, 1); w.details[7].events.push(goal(1, 50, 10));
+    const m2 = w.tick();
+    assert.deepEqual(titles(m2), ['GOL do Flamengo!']);
+    assert.ok(m2[0].body.includes("Pedro 50'") && !m2[0].body.includes('Zagueiro'), 'lance no time ' + cidLance + ': ' + m2[0].body);
+    w.next(); assert.deepEqual(w.tick(), [], 'nada repete');
+  });
+});
+
+t('item 6: reserva FotMob entre 0h e 4h de Brasilia le tambem o dia anterior', () => {
+  const w = world(); w.clock = Date.parse('2026-11-05T04:30:00Z'); // 01h30 em Brasilia
+  w.ctx.Utilities.formatDate = (d, _tz, fmt) => {
+    const b = new Date(d.getTime() - 3 * 36e5);
+    if (fmt === 'H') return String(b.getUTCHours());
+    if (fmt === 'yyyyMMdd') return b.toISOString().slice(0, 10).replace(/-/g, '');
+    return '12';
+  };
+  w.register();
+  const g = foot({ statusGroup: 3, startTime: '2026-11-05T02:30:00.000Z' }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.fora.s365 = true;
+  w.fmPorDia = { 20261104: [fmJogo('Flamengo', 'Grêmio', 1, 0, g.startTime)], 20261105: [fmJogo('Outro', 'Time', 0, 0, g.startTime)] };
+  assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!']);
+  assert.equal(w.store.fonte, 'FotMob');
+});
+
+t('item 7: tenis por comecar segue vigiado mesmo 6 h depois do horario previsto', () => {
+  const w = world(); w.register();
+  const g = { id: 8, sportId: 3, competitionId: 5, competitionDisplayName: 'Viena', startTime: new Date(w.clock - 6 * 36e5).toISOString(), statusGroup: 2, statusText: 'Prog.', stages: [],
+    homeCompetitor: { id: 100, name: 'João Fonseca', score: -1 }, awayCompetitor: { id: 200, name: 'Rival', score: -1 } };
+  w.games = [g];
+  assert.deepEqual(w.tick(), []); w.next();
+  g.statusGroup = 3; g.stages = [{ id: 27, shortName: 'S1', homeCompetitorScore: 0, awayCompetitorScore: 0 }, { id: 35, shortName: 'Sets', homeCompetitorScore: 0, awayCompetitorScore: 0 }];
+  assert.deepEqual(titles(w.tick()), ['Em quadra']);
+});
+
+t('item 8: F1 na reserva ESPN so manda resultado com a sessao encerrada (bandeira vermelha nao vale)', () => {
+  const w = world(); w.register({ follows: { c: [], comp: [], f1: true, drivers: [], mute: [] } });
+  w.fora.openf1 = true;
+  const a = w.clock - 2 * 36e5;
+  const comp = (state) => [{ id: '77', date: new Date(a).toISOString(), type: { abbreviation: 'Race' }, status: { type: { state } }, competitors: [{ id: '4', order: 1, athlete: { displayName: 'Lando Norris' } }, { id: '44', order: 2, athlete: { displayName: 'Lewis Hamilton' } }] }];
+  w.espnF1 = { events: [{ id: '600', name: 'GP do Brasil', competitions: comp('in') }] };
+  w.espnStats = { 4: { totalTime: '1:40:00.000' }, 44: { gapToLeader: '+1.200' } };
+  assert.deepEqual(w.tick(), [], 'corrida rolando'); w.next(15);
+  assert.deepEqual(w.tick(), [], 'passou da duracao tipica, mas a ESPN segue "in" (bandeira vermelha)'); w.next(15);
+  assert.deepEqual(w.tick(), [], 'segue sem resultado'); w.next();
+  w.espnF1.events[0].competitions = comp('post');
+  w.espnStats = { 4: { totalTime: '2:10:00.000' }, 44: { behindTime: '+3.500' } };
+  const m = w.tick();
+  assert.deepEqual(titles(m), ['Corrida: GP do Brasil']);
+});
+
+t('item 9: uso do gatilho conta 24 h moveis, sem zerar as 21h de Brasilia', () => {
+  const w = world(); w.register();
+  w.clock = Date.parse('2026-11-04T23:50:00Z');
+  const g = foot({ statusGroup: 3, startTime: new Date(w.clock - 36e5).toISOString() }); score(g, 0, 0); w.games = [g];
+  w.tick();
+  const h = Math.floor(w.clock / 36e5);
+  w.store.uso = JSON.stringify({ [h - 1]: 30 * 60000, [h]: 31 * 60000 });
+  w.clock = Date.parse('2026-11-05T00:10:00Z'); // virou o dia UTC (21h10 em Brasilia)
+  let dormiu = false; w.onSleep = () => { dormiu = true; };
+  w.tick();
+  assert.ok(!dormiu, 'uso de 61 min nas ultimas 2 h continua contando');
+  assert.ok(w.ctx.status_().usoMin >= 61, 'usoMin: ' + w.ctx.status_().usoMin);
+  w.onSleep = null; w.clock += 25 * 36e5;
+  assert.ok(w.ctx.status_().usoMin < 1, 'depois de 24 h sai da conta');
+  assert.ok(Buffer.byteLength(w.store.uso) < 1024, 'Property pequena');
+});
+
+t('item 10: push recusado (403, fila esgotada) conta em fails/lastError e em pushFalhas no status', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  w.pushCode = 403; score(g, 1, 0); w.tick();
+  let st = w.ctx.status_();
+  assert.ok(st.fails >= 1 && /recusad/.test(st.lastError), JSON.stringify([st.fails, st.lastError]));
+  assert.equal(st.pushFalhas, 1);
+  assert.ok(st.pushErro && /403/.test(st.pushErro.erro), JSON.stringify(st.pushErro));
+  assert.ok(st.lastTick > 0 && st.devices === 1 && st.aparelhos.length === 1 && 'usoMin' in st, 'campos antigos');
+  // 503 por mais de 10 minutos: o aviso sai da fila e conta como recusa.
+  w.next(); w.pushCode = 503; score(g, 2, 0); w.tick();
+  assert.ok(w.store.queue);
+  for (let i = 0; i < 11; i++) { w.next(); w.tick(); }
+  st = w.ctx.status_();
+  assert.ok(st.pushFalhas >= 2, 'fila esgotada conta: ' + st.pushFalhas);
+  assert.ok(!w.store.queue);
+  w.clock += 25 * 36e5;
+  assert.equal(w.ctx.status_().pushFalhas, 0, 'janela de 24 h');
+});
+
+t('item 11: um ciclo com gol grava Properties uma vez so', () => {
+  const w = world(); w.register(); const g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  score(g, 1, 0);
+  w.calls = Object.assign(w.calls, { get: 0, getAll: 0, set: 0, del: 0 });
+  assert.deepEqual(titles(w.tick()), ['GOL do Flamengo!']);
+  assert.ok(w.calls.set <= 1 && w.calls.del === 0, 'gravacoes: ' + JSON.stringify(w.calls));
+  assert.ok(w.calls.get + w.calls.getAll <= 2, 'leituras: ' + JSON.stringify(w.calls));
+  assert.ok(Number(w.store.lastTick) === w.clock && Number(w.store.lastPoll) === w.clock && w.store.fails === '0', 'tudo gravado');
+});
+
+t('item 12: inicio do 2o tempo (desligado por padrao) e "avisos voltaram a funcionar"', () => {
+  let w = world(); w.register({ rules: { st2: true } }); let g = foot({ statusGroup: 3, statusText: 'Intervalo' }); score(g, 1, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  g.statusText = '2º tempo';
+  let m = w.tick();
+  assert.deepEqual(titles(m), ['Começou o 2º tempo']);
+  assert.equal(m[0].body, 'Flamengo 1 x 0 Grêmio');
+  w = world(); w.register(); g = foot({ statusGroup: 3, statusText: 'Intervalo' }); score(g, 1, 0); w.games = [g];
+  w.details[7] = { events: [], members: [], stages: [] }; w.tick(); w.next();
+  g.statusText = '2º tempo';
+  assert.deepEqual(w.tick(), [], 'desligado por padrao');
+  // Problema e volta.
+  w = world(); w.register(); g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g]; w.tick();
+  w.failApi = true; let all = [];
+  for (let i = 0; i < 16; i++) { w.next(); all = all.concat(w.tick()); }
+  w.failApi = false; w.next(); all = all.concat(w.tick());
+  w.next(); all = all.concat(w.tick());
+  assert.deepEqual(titles(all), ['Tribuna: avisos com problema', 'Tribuna: avisos voltaram a funcionar']);
+  assert.equal(all[1].tag, 'robo', 'troca o aviso de problema');
+  // Desligado nas regras: nao avisa a volta.
+  w = world(); w.register({ rules: { roboOk: false } }); g = foot({ statusGroup: 3 }); score(g, 0, 0); w.games = [g]; w.tick();
+  w.failApi = true; all = [];
+  for (let i = 0; i < 16; i++) { w.next(); all = all.concat(w.tick()); }
+  w.failApi = false; w.next(); all = all.concat(w.tick());
+  assert.deepEqual(titles(all), ['Tribuna: avisos com problema']);
 });
 
 console.log(`ROBO OK: ${n} cenarios`);

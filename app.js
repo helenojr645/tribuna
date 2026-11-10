@@ -89,7 +89,7 @@ S.watch = S.watch || {};
 
 const R = {
   relogio: {}, animar: null, telaAnterior: null,
-  watchData: {}, liveStats: {},
+  watchData: {}, watchLendo: {}, liveStats: {},
   mainRoute: '#/agora', reveal: new Set(), scores: new Map(), lastOk: 0, failed: false, polling: false,
   chaves: {}, chaveIni: {}, aoVivo: {}, homeCamps: null,
   home: null, f1: null, f1Res: {}, fonte: null, primaryDownUntil: 0, goals: {}, goalPrev: {}, compRank: {}, failCount: 0, f1Static: null, gameTab: {}, game: {}, stats: {}, standings: {}, standingsAt: {}, standingsFail: {}, nav: 0, f1Tab: 'fds', f1Session: null,
@@ -172,6 +172,19 @@ async function getJson(url, ms) {
   } finally { clearTimeout(tid); }
 }
 const api = (path) => getJson(`${API}${path}${path.includes('?') ? '&' : '?'}${API_Q}`);
+// Dado que quase nao muda (proximos jogos, tabela): guarda por alguns minutos em vez de reler a cada 5 s.
+// Leituras simultaneas do mesmo endereco dividem a mesma resposta.
+const GUARDADO = {};
+function lerGuardado(path, ms) {
+  const c = GUARDADO[path];
+  if (c && (c.p || Date.now() - c.at < ms)) return c.p || Promise.resolve(c.v);
+  const p = api(path).then((v) => { GUARDADO[path] = { v, at: Date.now() }; return v; }, (e) => {
+    if (c) GUARDADO[path] = c; else delete GUARDADO[path];
+    throw e;
+  });
+  GUARDADO[path] = { v: c && c.v, at: c ? c.at : 0, p };
+  return p;
+}
 function remember(list) { (list || []).forEach((c) => { if (c && c.id) R.known[c.id] = c; }); }
 function dedupeGames(lists) {
   const m = new Map();
@@ -188,9 +201,14 @@ const isAuto = (id) => (id > 0 ? isTeam(id) && !S.autoOff.includes(id) : S.autoC
 function autoDoJogo(g) {
   return isAuto(Number(g.homeCompetitor.id)) || isAuto(Number(g.awayCompetitor.id)) || isAuto(-Number(g.competitionId));
 }
+// Os dois sininhos levam legenda visivel: o Heleno confundiu o aviso com o cartao ao vivo (10/11/2026).
 function botaoAuto(id, nome) {
   const on = isAuto(id);
-  return `<button class="icon-btn auto ${on ? 'on' : ''}" data-act="auto" data-id="${id}" aria-pressed="${on}" aria-label="Cartão ao vivo automático: ${esc(nome)}">${ICON_WATCH}</button>`;
+  return `<button class="icon-btn icon-lab auto ${on ? 'on' : ''}" data-act="auto" data-id="${id}" aria-pressed="${on}" aria-label="Cartão ao vivo automático: ${esc(nome)}">${ICON_WATCH}<span class="lab" aria-hidden="true">Cartão ao vivo</span></button>`;
+}
+function botaoAvisos(id, nome) {
+  const on = !isMuted(id);
+  return `<button class="icon-btn icon-lab ${on ? 'on' : ''}" data-act="mute" data-id="${id}" aria-pressed="${on}" aria-label="Avisos de ${esc(nome)}">${on ? ICONS.bell : ICONS.bellOff}<span class="lab" aria-hidden="true">Avisos</span></button>`;
 }
 function toggleTeam(c) {
   const id = Number(c.id);
@@ -286,13 +304,21 @@ function fmtPoint(v) { return v === 50 ? 'AD' : num(v); }
 
 // ---------- Reservas ----------
 // A fonte principal cai: usa a reserva e so volta a tentar a principal depois de 1 minuto.
+// Falha rapida (o iPhone da "Load failed" ao voltar do segundo plano) tenta de novo na hora antes de trocar.
 async function comReserva(principal, reserva) {
   if (Date.now() >= R.primaryDownUntil) {
+    const t0 = Date.now();
     try {
       const r = await principal();
       R.fonte = null;
       return r;
     } catch (e) {
+      let r2, ok = false;
+      if (Date.now() - t0 < 5000) {
+        await new Promise((res) => setTimeout(res, 800));
+        try { r2 = await principal(); ok = true; } catch (_) {}
+      }
+      if (ok) { R.fonte = null; return r2; }
       R.primaryDownUntil = Date.now() + 6e4;
       console.warn('365Scores fora, usando reserva', e);
     }
@@ -302,8 +328,10 @@ async function comReserva(principal, reserva) {
 async function loadHomeReserva() {
   const conhecidos = (R.home && R.home.games) || [];
   const querTenis = S.teams.some((t) => t.sportId === 3) || conhecidos.some((g) => g.sportId === 3);
+  const seq = seqNova('home');
   const alt = await Fontes.todos(querTenis);
-  const games = Fontes.reconciliar(alt.jogos, conhecidos, S.teams);
+  if (!seqAplica('home', seq)) return R.home;
+  const games = Fontes.reconciliar(alt.jogos, (R.home && R.home.games) || conhecidos, S.teams);
   conferirRelogios(games);
   games.forEach((g) => { if (g.preciseGameTime) registrarRelogio(g); });
   detectGoals(games);
@@ -313,9 +341,20 @@ async function loadHomeReserva() {
   R.lastOk = Date.now(); R.failed = false;
   return R.home;
 }
+// A lista da Agora e a leitura mais fresca; Fontes.porId (copia da reserva, nunca limpa) so cobre o que falta.
 function acharJogo(id) {
-  return Fontes.porId[id] || ((R.home && R.home.games) || []).find((g) => g.id === id) || null;
+  return ((R.home && R.home.games) || []).find((g) => g.id === id) || Fontes.porId[id] || null;
 }
+// Jogo com os codigos das reservas (FotMob/ESPN), para ler o detalhe por elas.
+function jogoDaReserva(id) {
+  const g = acharJogo(id);
+  return g && (g._fmId || g._espnId) ? g : (Fontes.porId[id] || g);
+}
+// Numero de sequencia por leitura: resposta mais velha que a ultima aplicada e descartada
+// (poll(true) pode sobrepor leituras, e o placar voltava ou gerava "GOL" falso).
+const SEQ = {};
+function seqNova(k) { const s = SEQ[k] || (SEQ[k] = { n: 0, ok: 0 }); return ++s.n; }
+function seqAplica(k, n) { const s = SEQ[k]; if (!s || n < s.ok) return false; s.ok = n; return true; }
 
 // ---------- Quem fez o gol ----------
 // A lista de jogos nao traz os lances: os autores vem da leitura completa do jogo e ficam guardados por jogo.
@@ -498,11 +537,15 @@ async function loadWatch() {
     const w0 = S.watch[id];
     if (w0 && w0.t && Date.now() > w0.t + 10 * 36e5) { delete S.watch[id]; delete R.watchData[id]; save(); syncPrefs(); return; }
     const cache = R.watchData[id];
-    if (cache && Date.now() - cache.at < 40000) return;
+    // Encerrado: 5 min basta (so falta apagar 30 min depois do fim).
+    if (cache && Date.now() - cache.at < (cache.game && cache.game.statusGroup === 4 ? 5 * 6e4 : 40000)) return;
+    // Leituras sobrepostas (poll(true)) nao repetem a mesma busca.
+    if (R.watchLendo[id]) return;
+    R.watchLendo[id] = true;
     try {
       let game, stats;
       if (id >= 7e8 || Date.now() < R.primaryDownUntil) {
-        const base = acharJogo(id);
+        const base = jogoDaReserva(id);
         if (!base) return;
         const r = await Fontes.detalhe(base);
         game = r.game; stats = r.stats;
@@ -518,7 +561,7 @@ async function loadWatch() {
         if (w && !w.fim) { w.fim = Date.now(); save(); }
         if (w && Date.now() - w.fim > 30 * 6e4) { delete S.watch[id]; save(); syncPrefs(); }
       }
-    } catch (e) { console.warn('acompanhar', id, e); }
+    } catch (e) { console.warn('acompanhar', id, e); } finally { delete R.watchLendo[id]; }
   }));
 }
 // Numeros nos cartoes ao vivo dos seus times: leve, atualiza a cada minuto.
@@ -580,9 +623,23 @@ function painelAgora(g, stats, opts) {
   return `<div class="painel-agora ${opts.compacto ? 'compacto' : ''}">${titulo}
     ${ult ? `<p class="lance">${esc(ult)}</p>` : ''}${pr ? `<p class="pressao">${esc(pr)}</p>` : ''}${barras}</div>`;
 }
+// Placar e status do jogo acompanhado: a lista da Agora (lida a cada 5 s) vale mais que a leitura
+// completa (a cada 40 s); dessa ficam os lances, o relogio e os numeros.
+function jogoAcompanhado(id) {
+  const d = R.watchData[id], det = d && d.game;
+  const lista = ((R.home && R.home.games) || []).find((x) => x.id === id);
+  if (!det) return lista || acharJogo(id);
+  if (!lista || (R.home.at || 0) < (d.at || 0)) return det;
+  const g = { ...det };
+  ['statusGroup', 'statusText', 'shortStatusText', 'gameTime', 'gameTimeDisplay'].forEach((f) => { if (lista[f] !== undefined) g[f] = lista[f]; });
+  if (lista.stages && lista.stages.length) g.stages = lista.stages;
+  g.homeCompetitor = { ...det.homeCompetitor, score: lista.homeCompetitor.score, isWinner: lista.homeCompetitor.isWinner };
+  g.awayCompetitor = { ...det.awayCompetitor, score: lista.awayCompetitor.score, isWinner: lista.awayCompetitor.isWinner };
+  return g;
+}
 function cartaoAcompanhando(id) {
   const d = R.watchData[id];
-  const g = (d && d.game) || acharJogo(id);
+  const g = jogoAcompanhado(id);
   if (!g) return '';
   const h = g.homeCompetitor, a = g.awayCompetitor;
   const spoil = hidden(g);
@@ -650,7 +707,7 @@ async function loadHomePrincipal() {
   const calls = [];
   if (ids.length) {
     calls.push(api(`/games/current/?competitors=${ids.join(',')}`));
-    calls.push(api(`/games/fixtures/?competitors=${ids.join(',')}`));
+    calls.push(lerGuardado(`/games/fixtures/?competitors=${ids.join(',')}`, 5 * 6e4));
   }
   if (comps.length) calls.push(api(`/games/current/?competitions=${comps.join(',')}`));
   const f1Call = S.f1.on ? f1Current().catch(() => R.f1) : Promise.resolve(null);
@@ -660,9 +717,12 @@ async function loadHomePrincipal() {
   const campsFresco = R.homeCamps && R.homeCamps.key === extra.join(',') && Date.now() - R.homeCamps.at < 3e4;
   const campsCall = !extra.length ? Promise.resolve([]) : campsFresco ? Promise.resolve(null)
     : api(`/games/allscores/?competitions=${extra.join(',')}&startDate=${diaApi(Date.now() - 864e5)}&endDate=${diaApi(Date.now())}&onlyLiveGames=true&showOdds=false`).then((d) => d.games || []).catch(() => null);
+  const seq = seqNova('home');
   const [res, f1, camps] = await Promise.all([Promise.all(calls), f1Call, campsCall]);
-  if (camps) { R.homeCamps = { key: extra.join(','), games: camps, at: Date.now() }; remember([].concat(...camps.map((g) => [g.homeCompetitor, g.awayCompetitor]))); }
   if (res.some((r) => !Array.isArray(r.games))) throw new Error('resposta sem jogos');
+  // Outra leitura mais nova ja foi aplicada: esta chegou atrasada e voltaria o placar.
+  if (!seqAplica('home', seq)) return R.home;
+  if (camps) { R.homeCamps = { key: extra.join(','), games: camps, at: Date.now() }; remember([].concat(...camps.map((g) => [g.homeCompetitor, g.awayCompetitor]))); }
   // A lista "current" e a mais fresca: entra por ultimo para sobrescrever fixtures.
   const games = dedupeGames([res[1] && res[1].games, res[0] && res[0].games, res[2] && res[2].games].filter(Boolean)
     .concat(ids.length ? [] : res.map((r) => r.games)));
@@ -807,8 +867,9 @@ async function loadAgenda() {
   const games = await comReserva(async () => {
     const ids = S.teams.map((t) => t.id);
     const lists = [];
-    if (ids.length) lists.push((await api(`/games/fixtures/?competitors=${ids.join(',')}`)).games);
-    if (S.comps.length) lists.push((await api(`/games/fixtures/?competitions=${S.comps.map((c) => c.id).join(',')}`)).games);
+    // Agenda quase nao muda: a leitura fica guardada por 5 min (antes relia a cada 15 s).
+    if (ids.length) lists.push((await lerGuardado(`/games/fixtures/?competitors=${ids.join(',')}`, 5 * 6e4)).games);
+    if (S.comps.length) lists.push((await lerGuardado(`/games/fixtures/?competitions=${S.comps.map((c) => c.id).join(',')}`, 5 * 6e4)).games);
     const out = dedupeGames(lists).filter(gameIsMine);
     try { localStorage.setItem('tribuna.agenda', JSON.stringify(out.slice(0, 80))); } catch (_) {}
     return out;
@@ -1032,13 +1093,16 @@ function onSearch(value, target, sportFilter, render) {
 
 // ---------- Time ----------
 async function loadTeam(id) {
+  const seq = seqNova('time' + id);
   await comReserva(async () => {
     const [fx, rs] = await Promise.all([api(`/games/fixtures/?competitors=${id}`), api(`/games/results/?competitors=${id}`)]);
+    if (!seqAplica('time' + id, seq)) return;
     remember(fx.competitors); remember(rs.competitors);
     const comps = {}; [rs, fx].forEach((d) => (d.competitions || []).forEach((c) => { comps[c.id] = c; }));
     R.team = { id, comps, fixtures: fx.games || [], results: (rs.games || []).slice().sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
   }, async () => {
     await loadHomeReserva();
+    if (!seqAplica('time' + id, seq)) return;
     const meus = R.home.games.filter((g) => g.homeCompetitor.id === id || g.awayCompetitor.id === id);
     R.team = { id, comps: {}, fixtures: meus.filter((g) => g.statusGroup !== 4), results: meus.filter((g) => g.statusGroup === 4).sort((a, b) => new Date(b.startTime) - new Date(a.startTime)) };
   });
@@ -1115,7 +1179,7 @@ function renderTeam(id) {
   const t = R.team && R.team.id === id ? R.team : null;
   const on = isTeam(id);
   const head = `<header class="capa" style="--c1:${colorOf(c.color)}"><div class="capa-bar">${backBtn()}<span style="flex:1"></span>
-    ${on ? `<button class="icon-btn ${isMuted(id) ? '' : 'on'}" data-act="mute" data-id="${id}" aria-pressed="${!isMuted(id)}" aria-label="Avisos deste">${isMuted(id) ? ICONS.bellOff : ICONS.bell}</button>${botaoAuto(id, c.name)}` : ''}
+    ${on ? `${botaoAvisos(id, c.name || 'este time')}${botaoAuto(id, c.name || 'este time')}` : ''}
     <button class="follow ${on ? 'on' : ''}" data-act="follow" data-id="${id}" aria-pressed="${on}">${on ? 'Seguindo' : 'Seguir'}</button></div>
     ${c.name ? crest(c, 128) : ''}<h1>${esc(c.name)}</h1></header>`;
   if (!t) return head + '<div class="skeleton"></div><div class="skeleton"></div>';
@@ -1210,12 +1274,17 @@ function standingsTable(d, highlight) {
   }).join('') + zonasLegenda(dest, st.rows);
 }
 async function loadLeague(id) {
-  const [st, gm] = await Promise.all([loadStandings(id).catch(() => null), comReserva(() => api(`/games/current/?competitions=${id}`), async () => {
+  const seq = seqNova('liga' + id);
+  // Tabela e proximos jogos quase nao mudam: 5 min; com jogo do campeonato ao vivo, a tabela 1 min.
+  const temVivo = R.league && R.league.id === id && R.league.games.some((g) => g.statusGroup === 3);
+  const stFresca = R.standings[id] && Date.now() - (R.standingsAt[id] || 0) < (temVivo ? 6e4 : 5 * 6e4);
+  const [st, gm] = await Promise.all([stFresca ? R.standings[id] : loadStandings(id).catch(() => null), comReserva(() => api(`/games/current/?competitions=${id}`), async () => {
     await loadHomeReserva();
     return { games: R.home.games.filter((g) => g.competitionId === id), competitions: [] };
   })]);
-  const [fx, chave] = Date.now() < R.primaryDownUntil ? [{ games: [] }, (R.chaves[id] || {}).v] : await Promise.all([api(`/games/fixtures/?competitions=${id}`).catch(() => ({ games: [] })), loadChave(id)]);
+  const [fx, chave] = Date.now() < R.primaryDownUntil ? [{ games: [] }, (R.chaves[id] || {}).v] : await Promise.all([lerGuardado(`/games/fixtures/?competitions=${id}`, 5 * 6e4).catch(() => ({ games: [] })), loadChave(id)]);
   const comp = (gm.competitions || []).find((c) => c.id === id) || (st && st.competitions || []).find((c) => c.id === id) || LEAGUES.find((l) => l.id === id) || { id, name: '' };
+  if (!seqAplica('liga' + id, seq)) return;
   R.league = { id, comp, st, chave, games: dedupeGames([fx.games, gm.games]) };
   R.lastOk = Date.now(); R.failed = false;
 }
@@ -1342,10 +1411,17 @@ function f1Weekend_(list) {
       return {
         id: String(s.session_key), date: s.date_start, end: s.date_end, gmt: s.gmt_offset,
         type: { abbreviation: F1_ABBR[s.session_name] || s.session_name },
-        status: { type: { state: now < a ? 'pre' : now <= z ? 'in' : 'post' } }
+        status: { type: { state: now < a ? 'pre' : now <= z || f1Prorrogada(s.date_start, z, now) ? 'in' : 'post' } }
       };
     })
   };
+}
+// Passou do horario previsto (bandeira vermelha, chuva), mas a cronometragem oficial, lida ha menos de 1 min,
+// ainda nao disse Finished/Finalised: a sessao segue ao vivo (ate 4 h depois do previsto).
+function f1Prorrogada(inicio, fimPrevisto, now) {
+  if (!window.F1Vivo || now - fimPrevisto > 4 * 36e5 || F1Vivo.idade() > 6e4) return false;
+  const sit = F1Vivo.situacao(inicio);
+  return !!sit && !sit.acabou;
 }
 async function f1Current() {
   const ev = f1Weekend_(await loadF1Sessions());
@@ -1545,27 +1621,53 @@ function f1Teams() {
 
 // ---------- Detalhe do jogo ----------
 async function loadGameReserva(id) {
-  let base = acharJogo(id);
+  let base = jogoDaReserva(id);
   if (!base || (!base._fmId && !base._espnId)) {
     await loadHomeReserva();
-    base = acharJogo(id);
+    base = jogoDaReserva(id);
   }
   if (!base) throw new Error('jogo fora das reservas');
+  const seq = seqNova('jogo' + id);
   const r = await Fontes.detalhe(base);
-  R.game[id] = { game: r.game };
+  if (!seqAplica('jogo' + id, seq)) return;
+  const antes = R.game[id] && R.game[id].game;
+  if (r.game && r.game.statusGroup === 4 && antes && antes.statusGroup !== 4) FIM_VISTO[id] = Date.now();
+  R.game[id] = { game: r.game, at: Date.now() };
   registrarRelogio(r.game);
   if (r.stats) R.stats[id] = r.stats;
   R.fonte = base._fonte || R.fonte;
   R.lastOk = Date.now(); R.failed = false;
   if (R.gameTab[id] === 'tab' && !R.standings[base.competitionId]) await loadStandings(base.competitionId).catch(() => {});
 }
+// Jogo encerrado: rele no maximo a cada 5 min e para de vez 30 min depois do fim.
+const FIM_VISTO = {};
+function encerradoGuardado(id) {
+  const d = R.game[id], g = d && d.game;
+  if (!g || g.statusGroup !== 4) return false;
+  // Sem ter visto o apito, estima o fim em 2 h depois do inicio.
+  const fim = FIM_VISTO[id] || (FIM_VISTO[id] = Math.min(Date.now(), new Date(g.startTime).getTime() + 2 * 36e5));
+  return Date.now() - fim > 30 * 6e4 || Date.now() - (d.at || 0) < 5 * 6e4;
+}
+async function completarEncerrado(id) {
+  const g = R.game[id].game, tab = R.gameTab[id];
+  if (!R.stats[id] && id < 7e8 && Date.now() >= R.primaryDownUntil && (tab === 'num' || tab == null || tab === 'jogo' || g.sportId === 3)) {
+    R.stats[id] = await api(`/game/stats/?games=${id}`).catch(() => R.stats[id]);
+  }
+  if (tab === 'tab' && g.competitionId && !R.standings[g.competitionId]) await loadStandings(g.competitionId).catch(() => {});
+}
 function loadGame(id) {
+  if (encerradoGuardado(id)) return completarEncerrado(id);
   // Jogo que so existe na reserva nao tem pagina no 365Scores.
   if (id >= 7e8) return loadGameReserva(id);
   return comReserva(() => loadGamePrincipal(id), () => loadGameReserva(id));
 }
 async function loadGamePrincipal(id) {
+  const seq = seqNova('jogo' + id);
   const d = await api(`/game/?gameId=${id}`);
+  if (!seqAplica('jogo' + id, seq)) return;
+  const antes = R.game[id] && R.game[id].game;
+  if (d.game && d.game.statusGroup === 4 && antes && antes.statusGroup !== 4) FIM_VISTO[id] = Date.now();
+  d.at = Date.now();
   R.game[id] = d;
   registrarRelogio(d.game);
   R.lastOk = Date.now(); R.failed = false;
@@ -1964,13 +2066,11 @@ function sw(key, label, hint) {
 }
 function renderAjustes() {
   const follows = [
-    ...S.teams.map((t) => `<div class="item">${crest({ ...t, imageVersion: t.iv })}<a class="grow" href="#/time/${t.id}"><div class="t1">${esc(t.name)}</div><div class="t2">${t.sportId === 3 ? 'Tênis' : 'Futebol'}</div></a>
-       <button class="icon-btn ${isMuted(t.id) ? '' : 'on'}" data-act="mute" data-id="${t.id}" aria-pressed="${!isMuted(t.id)}" aria-label="Avisos de ${esc(t.name)}">${isMuted(t.id) ? ICONS.bellOff : ICONS.bell}</button>
-       ${botaoAuto(t.id, t.name)}
+    ...S.teams.map((t) => `<div class="item segue">${crest({ ...t, imageVersion: t.iv })}<a class="grow" href="#/time/${t.id}"><div class="t1">${esc(t.name)}</div><div class="t2">${t.sportId === 3 ? 'Tênis' : 'Futebol'}</div></a>
+       <div class="par-avisos">${botaoAvisos(t.id, t.name)}${botaoAuto(t.id, t.name)}</div>
        <button class="icon-btn on" data-act="follow" data-id="${t.id}" aria-label="Deixar de seguir ${esc(t.name)}">${ICONS.starOn}</button></div>`),
-    ...S.comps.map((c) => `<div class="item">${leagueImg(c)}<a class="grow" href="#/liga/${c.id}"><div class="t1">${esc(c.name)}</div><div class="t2">Campeonato inteiro</div></a>
-       <button class="icon-btn ${isMuted(-c.id) ? '' : 'on'}" data-act="mute" data-id="${-c.id}" aria-pressed="${!isMuted(-c.id)}" aria-label="Avisos de ${esc(c.name)}">${isMuted(-c.id) ? ICONS.bellOff : ICONS.bell}</button>
-       ${botaoAuto(-c.id, c.name)}
+    ...S.comps.map((c) => `<div class="item segue">${leagueImg(c)}<a class="grow" href="#/liga/${c.id}"><div class="t1">${esc(c.name)}</div><div class="t2">Campeonato inteiro</div></a>
+       <div class="par-avisos">${botaoAvisos(-c.id, c.name)}${botaoAuto(-c.id, c.name)}</div>
        <button class="icon-btn on" data-act="followcomp" data-id="${c.id}" aria-label="Deixar de seguir ${esc(c.name)}">${ICONS.starOn}</button></div>`)
   ].join('');
   const opts = (v) => Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === v ? 'selected' : ''}>${String(h).padStart(2, '0')}h</option>`).join('');
@@ -2542,10 +2642,21 @@ window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { poll(true); keepPushAlive(); checkRobo(); } });
 window.addEventListener('online', () => poll(true));
 // Com jogo ao vivo na tela, le a cada 5 s (a fonte guarda a resposta por 3 s); sem jogo, a cada 15 s.
+// Acompanhado conta so ao vivo ou comecando em ate 15 min (jogo de amanha nao precisa de 5 s).
+function vivoOuPerto(g) {
+  return !!g && (g.statusGroup === 3 || (g.statusGroup === 2 && new Date(g.startTime) - Date.now() <= 15 * 6e4));
+}
 function vivoNaTela() {
   const r = parseHash();
-  if (r.view === 'jogo' && r.id) { const g = acharJogo(Number(r.id)); return !g || g.statusGroup === 3; }
-  return !!(R.home && R.home.games.some((g) => g.statusGroup === 3 && gameIsMine(g))) || Object.keys(S.watch).length > 0;
+  if (r.view === 'jogo' && r.id) {
+    const id = Number(r.id);
+    // A leitura do proprio jogo e a mais fresca; a lista cobre o jogo que ainda nao foi lido.
+    const g = (R.game[id] && R.game[id].game) || acharJogo(id);
+    // Ainda sem leitura nenhuma: le rapido ate saber o status.
+    return !g || g.statusGroup === 3;
+  }
+  return !!(R.home && R.home.games.some((g) => g.statusGroup === 3 && gameIsMine(g)))
+    || Object.keys(S.watch).some((k) => vivoOuPerto(jogoAcompanhado(Number(k))));
 }
 (function laco() { setTimeout(() => { poll(false); laco(); }, vivoNaTela() ? POLL_VIVO_MS : POLL_MS); })();
 setInterval(tickFresh, 1000);

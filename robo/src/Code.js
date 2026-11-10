@@ -11,9 +11,11 @@ var MAX_DEVICES = 5;
 var PUSH_HOSTS = /^https:\/\/(web\.push\.apple\.com|fcm\.googleapis\.com|[a-z0-9.-]+\.push\.services\.mozilla\.com|[a-z0-9.-]+\.notify\.windows\.com)\//;
 
 var DEFAULT_RULES = {
-  remind: true, lineup: false, kick: true, goal: true, red: true, ht: false, end: true,
+  remind: true, lineup: false, kick: true, goal: true, red: true, ht: false, st2: false, end: true,
   tStart: true, tSet: true, tEnd: true,
-  f1Remind: true, f1Start: false, f1End: true
+  f1Remind: true, f1Start: false, f1End: true,
+  // "Avisos voltaram a funcionar": fecha o aviso de problema, que vai para todos sem regra.
+  roboOk: true
 };
 
 // ---------- Web app ----------
@@ -111,6 +113,9 @@ function status_() {
     fails: Number(p.getProperty('fails') || 0),
     lastError: p.getProperty('lastError') || '',
     usoMin: Math.round(usoHoje_(p) / 6000) / 10,
+    // Recusas do servico de push nas ultimas 24 h (400/403, ou 429/5xx que esgotaram a fila).
+    pushFalhas: pushFalhas24h_(p),
+    pushErro: JSON.parse(p.getProperty('pushErro') || 'null'),
     fonte: p.getProperty('fonte') || '',
     devices: deviceIds_().length,
     // Diagnostico sem dado sensivel: nem endereco de push nem id do aparelho saem daqui.
@@ -135,7 +140,7 @@ function deviceIds_() {
 }
 
 function loadDevices_() {
-  var all = props_().getProperties();
+  var all = todas_(props_());
   var out = [];
   Object.keys(all).forEach(function (k) {
     if (k.indexOf('dev:') === 0) { try { out.push(JSON.parse(all[k])); } catch (_) {} }
@@ -143,8 +148,52 @@ function loadDevices_() {
   return out;
 }
 
-function saveDevice_(d) { props_().setProperty('dev:' + d.id, JSON.stringify(d)); }
-function deleteDevice_(id) { props_().deleteProperty('dev:' + id); }
+function saveDevice_(d) { var o = {}; o['dev:' + d.id] = JSON.stringify(d); poe_(props_(), o); }
+function deleteDevice_(id) { tira_(props_(), 'dev:' + id); }
+
+// ---------- Properties em lote ----------
+// Durante o tick, leituras e gravacoes ficam em memoria e vao numa unica gravacao no fim
+// (cota diaria de leitura/escrita de Properties). Fora do tick, tudo vai direto.
+var BUF_ = null;
+function abreBuf_(p) { BUF_ = { mem: p.getProperties(), set: {}, del: {} }; }
+function le_(p, k) {
+  if (!BUF_) return p.getProperty(k);
+  if (k in BUF_.set) return BUF_.set[k];
+  if (BUF_.del[k]) return null;
+  return k in BUF_.mem ? BUF_.mem[k] : null;
+}
+function todas_(p) {
+  if (!BUF_) return p.getProperties();
+  var o = {};
+  Object.keys(BUF_.mem).forEach(function (k) { if (!BUF_.del[k]) o[k] = BUF_.mem[k]; });
+  Object.keys(BUF_.set).forEach(function (k) { o[k] = BUF_.set[k]; });
+  return o;
+}
+function poe_(p, obj) {
+  if (!BUF_) { p.setProperties(obj); return; }
+  Object.keys(obj).forEach(function (k) { BUF_.set[k] = String(obj[k]); delete BUF_.del[k]; });
+}
+function tira_(p, k) {
+  if (!BUF_) { p.deleteProperty(k); return; }
+  delete BUF_.set[k];
+  BUF_.del[k] = 1;
+}
+function fechaBuf_(p) {
+  if (!BUF_) return;
+  var b = BUF_;
+  BUF_ = null;
+  Object.keys(b.del).forEach(function (k) { if (k in b.mem) { try { p.deleteProperty(k); } catch (_) {} } });
+  var ks = Object.keys(b.set);
+  if (!ks.length) return;
+  try {
+    p.setProperties(b.set);
+  } catch (err) {
+    // Um valor grande demais nao pode levar junto lastTick, fails e a memoria dos jogos.
+    var ruins = [];
+    ks.forEach(function (k) { try { p.setProperty(k, b.set[k]); } catch (e2) { ruins.push(k); } });
+    try { p.setProperties({ lastError: ('gravacao falhou em ' + ruins.join(',') + ': ' + (err && err.message || err)).slice(0, 300) }); } catch (_) {}
+  }
+}
 
 function authDevice_(req) {
   if (!req.id || !req.secret) return null;
@@ -298,7 +347,8 @@ function randomBytes_(n) {
 function pushMany_(items) {
   var live = items.filter(function (it) { return it.dev && it.dev.sub; });
   if (!live.length) return { sent: 0, codes: [], retry: [] };
-  var keys = JSON.parse(props_().getProperty('vapid'));
+  var p = props_();
+  var keys = JSON.parse(le_(p, 'vapid'));
   var nowSec = Math.floor(Date.now() / 1000);
   var auths = {};
   var reqs = [], ready = [], retry = [];
@@ -319,7 +369,7 @@ function pushMany_(items) {
       console.warn('push nao montado: ' + err);
     }
   });
-  var sent = 0, codes = [], erro = '';
+  var sent = 0, codes = [], erro = '', recusas = [];
   var res;
   try {
     res = UrlFetchApp.fetchAll(reqs);
@@ -338,19 +388,47 @@ function pushMany_(items) {
       dead.sub = null;
       saveDevice_(dead);
     } else if (c === 429 || c >= 500) retry.push(ready[i]);
-    else console.warn('push ' + c + ': ' + r.getContentText().slice(0, 200));
+    else {
+      // 400/403: o servico recusou de vez (chave VAPID, assinatura ou corpo). Nao adianta repetir.
+      console.warn('push ' + c + ': ' + r.getContentText().slice(0, 200));
+      recusas.push(c + ' em ' + hostDe_(ready[i].dev) + (r.getContentText() ? ': ' + r.getContentText().slice(0, 100) : ''));
+    }
   });
-  if (sent) props_().setProperty('lastPush', String(Date.now()));
-  props_().setProperty('lastSend', JSON.stringify({ at: Date.now(), sent: sent, codes: codes.slice(0, 10), erro: erro }));
-  return { sent: sent, codes: codes, retry: retry, erro: erro };
+  var mud = { lastSend: JSON.stringify({ at: Date.now(), sent: sent, codes: codes.slice(0, 10), erro: erro }) };
+  if (sent) mud.lastPush = String(Date.now());
+  poe_(p, mud);
+  if (recusas.length) notaRecusa_(p, recusas.length, recusas[0]);
+  // Entrega sem recusa fecha o erro de push em aberto.
+  else if (sent && le_(p, 'pushAberta')) tira_(p, 'pushAberta');
+  return { sent: sent, codes: codes, retry: retry, erro: erro, recusas: recusas };
 }
+
+function hostDe_(d) { var m = d && d.sub && String(d.sub.endpoint || '').match(/^https:\/\/([^/]+)/); return m ? m[1] : '?'; }
+
+// Recusas do push em baldes por hora (janela de 24 h). Quem estiver no tick soma tambem em fails/lastError.
+var RECUSAS_CICLO = [];
+function notaRecusa_(p, n, msg) {
+  var b = baldes_(le_(p, 'pushFalhas'));
+  var h = Math.floor(Date.now() / 3600000);
+  b[h] = (b[h] || 0) + n;
+  poe_(p, { pushFalhas: JSON.stringify(podaBaldes_(b, h)), pushErro: JSON.stringify({ at: Date.now(), n: n, erro: String(msg).slice(0, 200) }), pushAberta: '1' });
+  RECUSAS_CICLO.push(n + ' aviso(s) recusado(s) pelo serviço de push: ' + msg);
+}
+function pushFalhas24h_(p) { return somaBaldes_(baldes_(p.getProperty('pushFalhas')), Math.floor(Date.now() / 3600000)); }
+
+function baldes_(txt) { try { var o = JSON.parse(txt || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (_) { return {}; } }
+function podaBaldes_(b, h) { var o = {}; Object.keys(b).forEach(function (k) { if (Number(k) > h - 24) o[k] = b[k]; }); return o; }
+function somaBaldes_(b, h) { var s = 0; Object.keys(b).forEach(function (k) { if (Number(k) > h - 24) s += Number(b[k]) || 0; }); return s; }
 
 // Entrega com fila curta: aviso que falhou por erro temporario tenta de novo por 10 minutos.
 function deliver_(items, devices, now) {
   var p = props_();
-  var q = JSON.parse(p.getProperty('queue') || '[]');
+  var q = JSON.parse(le_(p, 'queue') || '[]');
   var byId = {};
   devices.forEach(function (d) { byId[d.id] = d; });
+  // Aviso que passou 10 minutos tentando (429/5xx) e foi descartado tambem e recusa.
+  var vencidos = q.filter(function (x) { return now - x.at >= 10 * 60000 && byId[x.id]; });
+  if (vencidos.length) notaRecusa_(p, vencidos.length, 'fila esgotada (10 min de 429/5xx) em ' + hostDe_(byId[vencidos[0].id]));
   var pending = q.filter(function (x) { return now - x.at < 10 * 60000 && byId[x.id]; })
     .map(function (x) { return { dev: byId[x.id], msg: x.msg, at: x.at }; });
   var novos = items.map(function (it) { return { dev: it.dev, msg: it.msg, at: now }; });
@@ -359,12 +437,12 @@ function deliver_(items, devices, now) {
     return !(x.msg.live && novos.some(function (n) { return n.dev.id === x.dev.id && n.msg.tag === x.msg.tag; }));
   });
   var all = pending.concat(novos);
-  if (!all.length) { if (q.length) p.deleteProperty('queue'); return; }
+  if (!all.length) { if (q.length) tira_(p, 'queue'); return; }
   var r = pushMany_(all);
   var next = (r.retry || []).map(function (it) { return { id: it.dev.id, msg: it.msg, at: it.at || now }; });
   var text = JSON.stringify(next);
   while (text.length > 8000 && next.length) { next.shift(); text = JSON.stringify(next); }
-  if (next.length) p.setProperty('queue', text); else if (q.length) p.deleteProperty('queue');
+  if (next.length) poe_(p, { queue: text }); else if (q.length) tira_(p, 'queue');
 }
 
 function cabecalhos_(msg, autorizacao) {
@@ -398,18 +476,37 @@ function fetchJsonRede_(url) {
   return JSON.parse(r.getContentText());
 }
 
-function noteFailure_(p, message) {
-  var fails = Number(p.getProperty('fails') || 0) + 1;
-  p.setProperties({ fails: String(fails), lastError: String(message).slice(0, 300) });
+// soPush: so recusa de push. Conta em fails/lastError, mas nao dispara o aviso de "nao consigo ler os placares".
+function noteFailure_(p, message, soPush) {
+  var fails = Number(le_(p, 'fails') || 0) + 1;
+  poe_(p, { fails: String(fails), lastError: String(message).slice(0, 300) });
   // Falha nunca fica em silencio: 15 minutos seguidos com erro geram um aviso unico.
-  if (fails >= 15 && !p.getProperty('downAlert')) {
-    p.setProperty('downAlert', '1');
+  if (fails >= 15 && !soPush && !le_(p, 'downAlert')) {
+    poe_(p, { downAlert: '1' });
     try {
       pushMany_(loadDevices_().map(function (d) {
         return { dev: d, msg: { title: 'Tribuna: avisos com problema', body: 'Faz 15 minutos que não consigo ler os placares. Os avisos de jogo podem falhar.', tag: 'robo', url: '#/ajustes' } };
       }));
     } catch (_) {}
   }
+}
+
+// Recusa de push fica em fails/lastError ate um aviso ser entregue sem recusa (o vigia do PC le o status).
+function zeraFalha_(p) {
+  if (le_(p, 'pushAberta')) return;
+  if (le_(p, 'fails') !== '0' || le_(p, 'lastError')) poe_(p, { fails: '0', lastError: '' });
+}
+
+// Ciclo sem erro: zera a contagem e, se tinha saido o aviso de problema, avisa que voltou (mesma tag, troca o anterior).
+function noteOk_(p, devices, now) {
+  zeraFalha_(p);
+  if (!le_(p, 'downAlert')) return;
+  tira_(p, 'downAlert');
+  try {
+    pushMany_((devices || []).filter(function (d) { return ruleAllowed_(d, 'roboOk', now); }).map(function (d) {
+      return { dev: d, msg: { title: 'Tribuna: avisos voltaram a funcionar', body: 'Os placares voltaram a ser lidos normalmente.', tag: 'robo', url: '#/ajustes', troca: true } };
+    }));
+  } catch (_) {}
 }
 
 // O gatilho do Apps Script roda no maximo 1x por minuto. Com jogo ao vivo, o robo le de novo
@@ -423,7 +520,14 @@ function tick() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
   var p = props_(), inicio = Date.now();
-  if (usoHoje_(p) > USO_ALTERNADO && new Date().getUTCMinutes() % 2) { lock.releaseLock(); return; }
+  try {
+    abreBuf_(p);
+  } catch (err) {
+    BUF_ = null;
+    lock.releaseLock();
+    return;
+  }
+  if (usoHoje_(p) > USO_ALTERNADO && new Date().getUTCMinutes() % 2) { BUF_ = null; lock.releaseLock(); return; }
   try {
     var vivo = ciclo_(p);
     if (vivo && Date.now() - inicio < 20000 && usoHoje_(p) < USO_MAX) {
@@ -432,31 +536,46 @@ function tick() {
     }
   } finally {
     somaUso_(p, Date.now() - inicio);
+    // Uma gravacao so por execucao: lastTick, lastPoll, fails, uso, memoria dos jogos, fila.
+    try { fechaBuf_(p); } catch (_) { BUF_ = null; }
     lock.releaseLock();
   }
 }
 
-function diaUso_() { return new Date().toISOString().slice(0, 10); }
+// Uso do gatilho numa janela movel de 24 h, em baldes por hora ("uso" = {"<hora desde 1970>": ms}).
+// Antes zerava no dia UTC (21h em Brasilia), bem no meio da noite de jogos.
 function usoHoje_(p) {
-  var u = String(p.getProperty('uso') || '').split('|');
-  return u[0] === diaUso_() ? Number(u[1]) || 0 : 0;
+  var raw = String(le_(p, 'uso') || '');
+  var h = Math.floor(Date.now() / 3600000);
+  if (raw.indexOf('|') > 0) {
+    // Formato antigo "aaaa-mm-dd|ms": conta tudo na hora atual (na duvida, gastou mais).
+    var u = raw.split('|');
+    return u[0] === new Date().toISOString().slice(0, 10) ? Number(u[1]) || 0 : 0;
+  }
+  return somaBaldes_(baldes_(raw), h);
 }
 function somaUso_(p, ms) {
-  try { p.setProperty('uso', diaUso_() + '|' + Math.round(usoHoje_(p) + ms)); } catch (_) {}
+  try {
+    var raw = String(le_(p, 'uso') || ''), h = Math.floor(Date.now() / 3600000), b;
+    if (raw.indexOf('|') > 0) { b = {}; b[h] = usoHoje_(p); } else b = baldes_(raw);
+    b[h] = Math.round((Number(b[h]) || 0) + ms);
+    poe_(p, { uso: JSON.stringify(podaBaldes_(b, h)) });
+  } catch (_) {}
 }
 
 // Uma leitura completa. Devolve true quando ha jogo seguido rolando agora.
 function ciclo_(p) {
   CACHE_CICLO = {};
+  RECUSAS_CICLO = [];
   var vivo = false;
   try {
     var now = Date.now();
-    p.setProperty('lastTick', String(now));
-    if (!p.getProperty('vapid')) return;
+    poe_(p, { lastTick: String(now) });
+    if (!le_(p, 'vapid')) return;
     var devices = loadDevices_().filter(function (d) { return d.sub; });
     if (!devices.length) return;
 
-    var plan = JSON.parse(p.getProperty('plan') || 'null');
+    var plan = JSON.parse(le_(p, 'plan') || 'null');
     if (!plan || now - plan.at > 30 * 60000) {
       try {
         plan = buildPlan_(devices, now);
@@ -467,22 +586,25 @@ function ciclo_(p) {
         plan.live = true;
       }
       // Salvo antes de qualquer saida: refazer o plano todo minuto estoura a cota diaria do gatilho.
-      p.setProperty('plan', JSON.stringify(plan));
+      poe_(p, { plan: JSON.stringify(plan) });
       cleanup_();
     }
     // Jogo acompanhado segue vigiado ate o cartao final, mesmo se o fim aconteceu com o robo parado.
     var vigiando = devices.some(function (d) {
       return (d.watch || []).some(function (w) { return !w.t || (now >= w.t - 90 * 60000 && now < w.t + 10 * 3600000); });
     });
-    var active = vigiando || plan.live || plan.starts.some(function (t) { return now >= t - 90 * 60000 && now <= t + 5 * 3600000; });
+    // Tenis: o horario e so estimado (depende das partidas antes). Partida ainda por comecar segue vigiada.
+    var active = vigiando || plan.live || plan.espera || plan.starts.some(function (t) { return now >= t - 90 * 60000 && now <= t + 5 * 3600000; });
     if (!active && !plan.f1Active) {
       deliver_([], devices, now);
-      p.setProperties({ fails: '0', lastError: '' });
-      if (p.getProperty('downAlert')) p.deleteProperty('downAlert');
+      if (RECUSAS_CICLO.length) { noteFailure_(p, RECUSAS_CICLO.join(' | '), true); return; }
+      // Nada foi lido agora: so zera, sem afirmar que os avisos voltaram.
+      zeraFalha_(p);
+      if (le_(p, 'downAlert')) tira_(p, 'downAlert');
       return;
     }
 
-    var mem = p.getProperties();
+    var mem = todas_(p);
     // Depois de uma parada longa, o que aconteceu no intervalo nao vira rajada de avisos atrasados.
     var lastPoll = Number(mem.lastPoll || 0);
     var stale = !lastPoll || now - lastPoll > 20 * 60000;
@@ -497,7 +619,7 @@ function ciclo_(p) {
         fonte = alt.fonte;
         console.warn('365Scores fora, usando ' + fonte + ': ' + err);
       }
-      if (fonte !== (mem.fonte || '')) p.setProperty('fonte', fonte);
+      if (fonte !== (mem.fonte || '')) poe_(p, { fonte: fonte });
       var meus = followedIds_(devices).c.map(Number);
       vivo = lista.some(function (g) { return g.statusGroup === 3 && (meus.indexOf(g.homeCompetitor.id) >= 0 || meus.indexOf(g.awayCompetitor.id) >= 0); });
       pollGames_(lista, devices, mem, writes, out, now, stale, partial);
@@ -505,15 +627,16 @@ function ciclo_(p) {
     if (plan.f1Active) {
       try { pollF1_(devices, mem, writes, out, now, stale); } catch (err) { partial.push('F1: ' + err); }
     }
-    if (Object.keys(writes).length) p.setProperties(writes);
+    writes.lastPoll = String(now);
+    poe_(p, writes);
     deliver_(out, devices, now);
     aplicarFimDasVigias_(devices);
-    p.setProperty('lastPoll', String(now));
+    var soPush = !partial.length;
+    partial = partial.concat(RECUSAS_CICLO);
     if (partial.length) {
-      noteFailure_(p, partial.join(' | '));
+      noteFailure_(p, partial.join(' | '), soPush);
     } else {
-      p.setProperties({ fails: '0', lastError: '' });
-      if (p.getProperty('downAlert')) p.deleteProperty('downAlert');
+      noteOk_(p, devices, now);
     }
   } catch (err) {
     console.error(err);
@@ -598,19 +721,54 @@ function achaReserva_(planejado, lista) {
   return pares.length === 1 ? pares[0] : null;
 }
 
+// Jogo parado de vez (adiado, suspenso, abandonado, cancelado): nao e "Fim", e o placar nao e o final.
+var PARADO_ = [[/adiad|postpon|^pp$/i, 'Adiado'], [/abandon|^ab$/i, 'Abandonado'], [/suspens|suspend|interromp/i, 'Suspenso'], [/cancel/i, 'Cancelado']];
+function paradoTxt_(s) {
+  s = String(s || '');
+  for (var i = 0; i < PARADO_.length; i++) if (PARADO_[i][0].test(s)) return PARADO_[i][1];
+  return '';
+}
+function parado_(g) {
+  if (!g || g.statusGroup !== 4) return '';
+  return paradoTxt_(g.statusText) || paradoTxt_(g.shortStatusText);
+}
+// ESPN: STATUS_POSTPONED, STATUS_SUSPENDED, STATUS_ABANDONED, STATUS_CANCELED vem com state "post".
+function espnParado_(tipo) {
+  var n = String((tipo && tipo.name) || '').replace(/^STATUS_/, '');
+  return /POSTPON/.test(n) ? 'Adiado' : /SUSPEND/.test(n) ? 'Suspenso' : /ABANDON/.test(n) ? 'Abandonado' : /CANCEL/.test(n) ? 'Cancelado' : '';
+}
+
 function futebolReserva_(now) {
   var dia = Utilities.formatDate(new Date(now), 'America/Sao_Paulo', 'yyyyMMdd');
+  var dias = [dia];
+  // Ate as 4h de Brasilia, o jogo da noite anterior ainda pode estar rolando: le ontem tambem.
+  if (Number(Utilities.formatDate(new Date(now), 'America/Sao_Paulo', 'H')) < 4) {
+    var ontem = Utilities.formatDate(new Date(now - 86400000), 'America/Sao_Paulo', 'yyyyMMdd');
+    if (ontem !== dia) dias.unshift(ontem);
+  }
   try {
     var ms = [], vistos = {};
-    (fetchJson_(FOTMOB + '/matches?date=' + dia + '&timezone=America%2FSao_Paulo&ccode3=BRA').leagues || []).forEach(function (l) {
-      (l.matches || []).forEach(function (m) {
-        // A FotMob repete o mesmo jogo em mais de uma lista.
-        if (m.id != null && vistos[m.id]) return;
-        vistos[m.id] = 1;
-        var st = m.status || {};
-        var curto = String((st.liveTime && st.liveTime.short) || '').replace(/[^0-9A-Za-z+]/g, '');
-        ms.push({ fm: m.id, min: /^\d/.test(curto) ? curto + "'" : '', liga: l.name, h: m.home.name, a: m.away.name, sh: st.started ? Number(m.home.score) || 0 : -1, sa: st.started ? Number(m.away.score) || 0 : -1,
-          t: st.utcTime, g: st.finished || st.cancelled || st.awarded ? 4 : st.started ? 3 : 2, txt: /^HT$/i.test(curto) ? 'Intervalo' : 'Ao vivo' });
+    dias.forEach(function (d, i) {
+      var resp;
+      try {
+        resp = fetchJson_(FOTMOB + '/matches?date=' + d + '&timezone=America%2FSao_Paulo&ccode3=BRA');
+      } catch (e1) {
+        // So o dia de hoje e obrigatorio.
+        if (d === dia) throw e1;
+        return;
+      }
+      (resp.leagues || []).forEach(function (l) {
+        (l.matches || []).forEach(function (m) {
+          // A FotMob repete o mesmo jogo em mais de uma lista (e em dois dias).
+          if (m.id != null && vistos[m.id]) return;
+          vistos[m.id] = 1;
+          var st = m.status || {};
+          var curto = String((st.liveTime && st.liveTime.short) || '').replace(/[^0-9A-Za-z+]/g, '');
+          var rz = st.reason || {};
+          var parou = st.awarded ? '' : (paradoTxt_(rz.long) || paradoTxt_(rz.short) || (st.cancelled ? 'Cancelado' : ''));
+          ms.push({ fm: m.id, min: /^\d/.test(curto) ? curto + "'" : '', liga: l.name, h: m.home.name, a: m.away.name, sh: st.started ? Number(m.home.score) || 0 : -1, sa: st.started ? Number(m.away.score) || 0 : -1,
+            t: st.utcTime, g: st.finished || st.cancelled || st.awarded || parou ? 4 : st.started ? 3 : 2, txt: /^HT$/i.test(curto) ? 'Intervalo' : 'Ao vivo', parou: parou });
+        });
       });
     });
     if (ms.length) return { lista: ms, fonte: 'FotMob' };
@@ -619,8 +777,11 @@ function futebolReserva_(now) {
   return { fonte: 'ESPN', lista: ev.map(function (e) {
     var c = e.competitions[0];
     var h = c.competitors.filter(function (x) { return x.homeAway === 'home'; })[0], a = c.competitors.filter(function (x) { return x.homeAway === 'away'; })[0];
-    var st = e.status.type, g = st.state === 'in' ? 3 : st.state === 'post' ? 4 : 2;
-    return { h: h.team.displayName, a: a.team.displayName, sh: g === 2 ? -1 : Number(h.score) || 0, sa: g === 2 ? -1 : Number(a.score) || 0, t: e.date, g: g, txt: /half.?time/i.test(st.description || '') ? 'Intervalo' : 'Ao vivo' };
+    var st = e.status.type, parou = espnParado_(st);
+    var g = parou ? 4 : st.state === 'in' ? 3 : st.state === 'post' ? 4 : 2;
+    // Adiado antes de comecar: sem placar (a ESPN manda 0 x 0).
+    var semPlacar = g === 2 || (parou && st.state !== 'in' && !(Number(h.score) || Number(a.score)) && parou === 'Adiado');
+    return { h: h.team.displayName, a: a.team.displayName, sh: semPlacar ? -1 : Number(h.score) || 0, sa: semPlacar ? -1 : Number(a.score) || 0, t: e.date, g: g, txt: /half.?time/i.test(st.description || '') ? 'Intervalo' : 'Ao vivo', parou: parou };
   }) };
 }
 
@@ -633,7 +794,8 @@ function tenisReserva_() {
           if ((c.competitors || []).length !== 2) return;
           var h = c.competitors[0], a = c.competitors[1];
           var nome = function (p) { return (p.athlete && p.athlete.displayName) || ''; };
-          var st = c.status.type.state, g = st === 'in' ? 3 : st === 'post' ? 4 : 2;
+          var parou = espnParado_(c.status.type);
+          var st = c.status.type.state, g = parou ? 4 : st === 'in' ? 3 : st === 'post' ? 4 : 2;
           var lh = h.linescores || [], la = a.linescores || [], sh = 0, sa = 0, stages = [];
           for (var i = 0; i < Math.max(lh.length, la.length); i++) {
             var u = lh[i] || {}, v = la[i] || {};
@@ -641,7 +803,7 @@ function tenisReserva_() {
             stages.push({ id: 27 + i, shortName: 'S' + (i + 1), homeCompetitorScore: Number(u.value) || 0, awayCompetitorScore: Number(v.value) || 0 });
           }
           stages.push({ id: 35, shortName: 'Sets', homeCompetitorScore: sh, awayCompetitorScore: sa });
-          out.push({ h: nome(h), a: nome(a), sh: sh, sa: sa, t: c.date, g: g, txt: 'Ao vivo', stages: stages, wh: !!h.winner, wa: !!a.winner });
+          out.push({ h: nome(h), a: nome(a), sh: sh, sa: sa, t: c.date, g: g, txt: 'Ao vivo', stages: stages, wh: !!h.winner, wa: !!a.winner, parou: parou });
         });
       });
     });
@@ -662,8 +824,9 @@ function jogosReserva_(plan, now) {
     if (!a) return;
     var g = JSON.parse(JSON.stringify(pl));
     g._alt = true;
+    g._fonte = pl.sportId === 3 ? 'ESPN' : fut.fonte;
     g.statusGroup = a.g;
-    g.statusText = a.g === 4 ? 'Fim' : a.g === 2 ? 'Programação' : a.txt;
+    g.statusText = a.g === 4 ? (a.parou || 'Fim') : a.g === 2 ? 'Programação' : a.txt;
     if (a.fm) g._fm = a.fm;
     g.gameTimeDisplay = a.min || '';
     g.homeCompetitor.score = a.sh; g.awayCompetitor.score = a.sa;
@@ -675,12 +838,16 @@ function jogosReserva_(plan, now) {
 }
 
 function buildPlan_(devices, now) {
-  var starts = [], live = false, games = [];
+  var starts = [], live = false, games = [], espera = false;
   fetchFollowedGames_(devices).forEach(function (g) {
     if (g.statusGroup === 4) return;
     if (g.statusGroup === 3) live = true;
     var t = new Date(g.startTime).getTime();
-    if (t > now - 6 * 3600000 && t < now + 24 * 3600000) {
+    // Tenis: o horario e estimado e a partida pode comecar horas depois. Ainda por comecar e ja
+    // passada a hora prevista, segue no plano e mantem a vigia ligada.
+    var tenisAtrasado = g.sportId === 3 && g.statusGroup === 2 && t <= now && t > now - 24 * 3600000;
+    if (tenisAtrasado) espera = true;
+    if (tenisAtrasado || (t > now - 6 * 3600000 && t < now + 24 * 3600000)) {
       starts.push(t);
       games.push(planoJogo_(g));
     }
@@ -710,7 +877,7 @@ function buildPlan_(devices, now) {
   });
   var peso = function (x) { return (vigiados[x.id] ? 0 : 2) + (x.statusGroup === 3 ? 0 : 1); };
   games.sort(function (u, v) { return peso(u) - peso(v) || new Date(u.startTime) - new Date(v.startTime); });
-  var plano = { at: now, starts: starts.slice(0, 80), live: live, f1Active: f1Active, games: games };
+  var plano = { at: now, starts: starts.slice(0, 80), live: live, espera: espera || undefined, f1Active: f1Active, games: games };
   while (bytes_(JSON.stringify(plano)) > 8500 && plano.games.length) plano.games.pop();
   return plano;
 }
@@ -766,6 +933,11 @@ function pollGames_(games, devices, mem, writes, out, now, stale, partial) {
       card: prev ? prev.card : 0, last: prev ? prev.last : '',
       t: t
     };
+    // Fonte desta leitura e desde quando ela esta valendo (a reserva pode estar um lance atras logo que assume).
+    if (g._alt || (prev && prev.fo)) {
+      cur.fo = g._fonte || '';
+      cur.fs = prev && (prev.fo || '') === cur.fo && prev.fs ? prev.fs : now;
+    }
     // Gols avisados sem autor, esperando o nome sair na fonte (tags dos avisos).
     if (prev && prev.pa && prev.pa.length && g.statusGroup === 3) cur.pa = prev.pa.slice(-4);
     var events = [];
@@ -841,7 +1013,7 @@ function comCores_(g, titulo) {
   return (bh ? bh + ' ' : '') + titulo;
 }
 
-var CARTAO_PRINCIPAL = { remind: 1, lineup: 1, kick: 1, goal: 1, red: 1, ht: 1, end: 1, tStart: 1, tSet: 1, tEnd: 1 };
+var CARTAO_PRINCIPAL = { remind: 1, lineup: 1, kick: 1, goal: 1, red: 1, ht: 1, st2: 1, end: 1, tStart: 1, tSet: 1, tEnd: 1 };
 
 // Quem acompanha recebe um cartao unico por jogo; os demais, os avisos normais.
 function enviarCartoes_(g, cur, prev, events, devices, out, now) {
@@ -938,7 +1110,7 @@ function pressao_(g) {
 }
 
 function relogio_(g) {
-  if (g.statusGroup === 4) return 'Fim';
+  if (g.statusGroup === 4) return parado_(g) || 'Fim';
   if (/intervalo/i.test(g.statusText || '')) return 'Intervalo';
   if (g.gameTimeDisplay) return String(g.gameTimeDisplay).replace(/\s/g, '');
   if (g.gameTime > 0) return Math.floor(g.gameTime) + "'";
@@ -949,7 +1121,8 @@ function sobrenome_(n) { var p = String(n || '').trim().split(/\s+/); return p[p
 
 function montarCartao_(g, cur, lances, now) {
   var cabeca = lances.map(function (ev) { return ev.head || ev.title; }).slice(-2).join(' · ');
-  if (!cabeca && g.statusGroup === 4) cabeca = /cancel/i.test(g.statusText || '') ? 'Jogo cancelado' : 'Fim de jogo';
+  var parou = parado_(g);
+  if (!cabeca && g.statusGroup === 4) cabeca = parou ? 'Jogo ' + parou.toLowerCase() : 'Fim de jogo' + (g.sportId === 1 && desfecho_(g) ? ' · ' + desfecho_(g) : '');
   var stats = g.statusGroup === 2 ? [] : estatisticasCartao_(g);
   var linhas = [];
   if (g.sportId === 3) {
@@ -983,7 +1156,9 @@ function montarCartao_(g, cur, lances, now) {
     if (g.competitionDisplayName) linhas.push(g.competitionDisplayName);
     return { title: titulo2, body: linhas.join('\n') };
   }
-  var tituloF = shortName_(g.homeCompetitor) + ' ' + cur.h + ' x ' + cur.a + ' ' + shortName_(g.awayCompetitor) + (relogio ? ' · ' + relogio : '');
+  // Adiado antes de comecar nao tem placar: "0 x 0" seria falso.
+  var semPlacar = parou && !(g.homeCompetitor.score >= 0) && !(g.awayCompetitor.score >= 0);
+  var tituloF = shortName_(g.homeCompetitor) + (semPlacar ? ' x ' : ' ' + cur.h + ' x ' + cur.a + ' ') + shortName_(g.awayCompetitor) + (relogio ? ' · ' + relogio : '');
   if (g.competitionDisplayName) linhas.push(g.competitionDisplayName);
   if (cabeca) linhas.push(cabeca);
   else if (cur.last) linhas.push('Último lance: ' + cur.last);
@@ -1024,7 +1199,7 @@ function wants_(d, g, rule, now) {
 
 function ruleAllowed_(d, rule, now) {
   if (!(d.rules || DEFAULT_RULES)[rule]) return false;
-  if (d.spoiler && ['goal', 'red', 'ht', 'end', 'tSet', 'tEnd', 'f1End'].indexOf(rule) >= 0) return false;
+  if (d.spoiler && ['goal', 'red', 'ht', 'st2', 'end', 'tSet', 'tEnd', 'f1End'].indexOf(rule) >= 0) return false;
   return !inQuiet_(d, now);
 }
 
@@ -1042,15 +1217,24 @@ function detailEvents_(game) {
   var penStages = {};
   (g.stages || []).forEach(function (s) { if (/p[eê]n/i.test((s.name || '') + ' ' + (s.shortName || ''))) penStages[s.id] = 1; });
   var nome = function (id) { var m = byId[id] || {}; return m.shortName || m.name || ''; };
+  var hId = g.homeCompetitor && g.homeCompetitor.id != null ? g.homeCompetitor.id : game.homeCompetitor.id;
+  var aId = g.awayCompetitor && g.awayCompetitor.id != null ? g.awayCompetitor.id : game.awayCompetitor.id;
   return (g.events || []).filter(function (e) {
     // Cobranca de disputa de penaltis nao e gol do jogo.
     return e.eventType && !penStages[e.stageId];
   }).map(function (e) {
+    var contra = e.eventType.id === 1 && /contra/i.test(e.eventType.subTypeName || '');
+    var comp = e.competitorId;
+    // No 365 o gol contra vem no time que ganhou o gol (o jogador e do outro). Se um dia vier no time
+    // do jogador, credita ao adversario, senao o placar e os autores dos gols seguintes se deslocam.
+    var dono = byId[e.playerId] && byId[e.playerId].competitorId;
+    if (contra && dono != null && dono === comp) comp = comp === hId ? aId : comp === aId ? hId : comp;
+    var nm = nome(e.playerId);
     return {
-      k: e.eventType.id + ':' + e.competitorId + ':' + e.gameTime + ':' + (e.playerId || 0),
-      type: e.eventType.id, typeName: e.eventType.name || '', name: nome(e.playerId),
+      k: e.eventType.id + ':' + comp + ':' + e.gameTime + ':' + (e.playerId || 0),
+      type: e.eventType.id, typeName: e.eventType.name || '', name: nm ? nm + (contra ? ' (contra)' : '') : '',
       out: (e.extraPlayers || []).map(nome).filter(Boolean)[0] || '',
-      min: e.gameTimeDisplay || '', comp: e.competitorId, gt: Number(e.gameTime) || 0
+      min: e.gameTimeDisplay || '', comp: comp, gt: Number(e.gameTime) || 0
     };
   });
 }
@@ -1074,20 +1258,47 @@ function footballEvents_(g, prev, cur, events, now, t) {
     return;
   }
   if (prev && prev.s === 2 && g.statusGroup === 3) events.push({ rule: 'kick', title: 'Bola rolando', head: 'Bola rolando', body: title, tag: 'j' + g.id });
+  var parou = parado_(g);
+  // Adiado (ou cancelado) antes de comecar: avisa sem placar.
+  if (parou && (!prev || prev.s === 2)) {
+    if (prev) events.push({ rule: 'kick', title: 'Jogo ' + parou.toLowerCase(), head: 'Jogo ' + parou.toLowerCase(), body: title + (g.competitionDisplayName ? ' · ' + g.competitionDisplayName : ''), tag: 'j' + g.id });
+    return;
+  }
 
   var scoreChanged = prev && (prev.h !== cur.h || prev.a !== cur.a);
-  // Gol anulado: reduz o que ja foi avisado para o proximo gol valer de novo.
-  // A reserva pode estar um lance atras do 365Scores: ali, placar menor nao significa gol anulado.
+  // A reserva pode estar um lance atras do 365Scores: ali, placar menor so vale como gol anulado
+  // quando a mesma fonte repete o placar menor em 2 leituras com 1 min entre elas e ja faz 3 min
+  // que ela assumiu. Antes disso o placar fica no maior ja avisado (aviso falso e pior que perdido).
   if (g._alt && (cur.h < cur.gh || cur.a < cur.ga)) {
-    cur.h = Math.max(cur.h, cur.gh); cur.a = Math.max(cur.a, cur.ga);
+    var q = prev && prev.qd;
+    var mesma = q && q.h === cur.h && q.a === cur.a && q.fo === cur.fo;
+    var qd = mesma ? { h: q.h, a: q.a, fo: q.fo, n: q.n + 1, at: q.at } : { h: cur.h, a: cur.a, fo: cur.fo, n: 1, at: now };
+    var firme = qd.n >= 2 && now - qd.at >= 60000 && now - (cur.fs || now) >= 3 * 60000;
+    if (!firme) {
+      cur.qd = qd;
+      cur.h = Math.max(cur.h, cur.gh); cur.a = Math.max(cur.a, cur.ga);
+    }
   }
   if (cur.h < cur.gh || cur.a < cur.ga) {
     events.push({ rule: 'goal', title: 'Gol anulado', body: scoreLine_(g), tag: 'j' + g.id + 'var' + now });
     cur.gh = Math.min(cur.gh, cur.h); cur.ga = Math.min(cur.ga, cur.a);
+    // Gols esperando autor alem do placar novo nao existem mais.
+    if (cur.pa) {
+      cur.pa = cur.pa.filter(function (x) {
+        var m = /(gh|ga)(\d+)$/.exec(x);
+        return !m || Number(m[2]) <= (m[1] === 'gh' ? cur.gh : cur.ga);
+      });
+      if (!cur.pa.length) delete cur.pa;
+    }
   }
   if (g.statusGroup === 3 || scoreChanged) {
     var det = g._alt ? [] : detailEvents_(g);
     var seen = ((prev && prev.ev) || []).slice();
+    var noDet = {};
+    det.forEach(function (e) { noDet[e.k] = 1; });
+    // Gol que sumiu dos lances (anulado pelo VAR) sai da memoria: senao conta como avisado
+    // e o gol seguinte sai sem autor, ou com o autor errado.
+    if (!g._alt) seen = seen.filter(function (k) { return k.indexOf('1:') !== 0 || noDet[k]; });
     det.forEach(function (e) {
       if (seen.indexOf(e.k) >= 0) return;
       var home = e.comp === g.homeCompetitor.id;
@@ -1144,7 +1355,43 @@ function footballEvents_(g, prev, cur, events, now, t) {
     }
   }
   if (prev && prev.st !== cur.st && /intervalo/i.test(cur.st)) events.push({ rule: 'ht', title: 'Intervalo', body: scoreLine_(g), tag: 'j' + g.id });
-  if (prev && prev.s === 3 && g.statusGroup === 4) events.push({ rule: 'end', title: 'Fim de jogo', body: scoreLine_(g, cur), tag: 'j' + g.id });
+  // Volta do intervalo: 2o tempo (ou prorrogacao). Desligado por padrao, como o intervalo.
+  if (prev && prev.s === 3 && g.statusGroup === 3 && /intervalo/i.test(prev.st || '') && !/intervalo/i.test(cur.st)) {
+    var pr = /p[eê]nalti/i.test(cur.st) ? 'Começou a disputa de pênaltis' : /prorroga/i.test(cur.st + ' ' + prev.st) ? 'Prorrogação: bola rolando' : 'Começou o 2º tempo';
+    events.push({ rule: 'st2', title: pr, head: pr, body: scoreLine_(g, cur), tag: 'j' + g.id });
+  }
+  if (prev && prev.s === 3 && g.statusGroup === 4) {
+    if (parou) {
+      // Suspenso, abandonado ou cancelado no meio: o placar e de quando parou, nao o final.
+      events.push({ rule: 'end', title: 'Jogo ' + parou.toLowerCase(), head: 'Jogo ' + parou.toLowerCase(), body: 'Parou em ' + scoreLine_(g, cur), tag: 'j' + g.id });
+    } else {
+      var desf = desfecho_(g);
+      events.push({ rule: 'end', title: 'Fim de jogo', head: 'Fim de jogo' + (desf ? ' · ' + desf : ''), body: scoreLine_(g, cur) + (desf ? ' (' + desf + ')' : ''), tag: 'j' + g.id });
+    }
+  }
+}
+
+// Penaltis ou prorrogacao no aviso de fim, conforme o que o 365Scores trouxer.
+// A lista traz penaltyScore em cada time; o /game/ traz a etapa "Pênaltis"; o texto vem "Pós-pênaltis"/"Pós-prorrogação".
+function desfecho_(g) {
+  var h = g.homeCompetitor || {}, a = g.awayCompetitor || {};
+  var ph = NaN, pa = NaN;
+  if (h.penaltyScore >= 0 && a.penaltyScore >= 0) { ph = Number(h.penaltyScore); pa = Number(a.penaltyScore); }
+  else {
+    var st = (g.stages || []).filter(function (s) { return /p[eê]n/i.test((s.name || '') + ' ' + (s.shortName || '')) && s.homeCompetitorScore >= 0; })[0];
+    if (st) { ph = Number(st.homeCompetitorScore); pa = Number(st.awayCompetitorScore); }
+  }
+  var txt = String(g.statusText || '') + ' ' + String(g.shortStatusText || '');
+  if (isFinite(ph) && isFinite(pa) && ph !== pa) {
+    var w = ph > pa ? h : a;
+    return shortName_(w) + ' vence nos pênaltis ' + Math.max(ph, pa) + ' x ' + Math.min(ph, pa);
+  }
+  if (/p[eê]nalti/i.test(txt)) {
+    var v = h.isWinner ? h : a.isWinner ? a : null;
+    return v ? shortName_(v) + ' vence nos pênaltis' : 'decidido nos pênaltis';
+  }
+  if (/prorroga/i.test(txt)) return 'após prorrogação';
+  return '';
 }
 
 function tennisEvents_(g, prev, cur, events, now, t) {
@@ -1160,7 +1407,9 @@ function tennisEvents_(g, prev, cur, events, now, t) {
   }
   if (prev && prev.s === 3 && g.statusGroup === 4) {
     var w = g.homeCompetitor.isWinner ? g.homeCompetitor : g.awayCompetitor.isWinner ? g.awayCompetitor : null;
-    events.push({ rule: 'tEnd', title: w ? w.name + ' venceu' : 'Fim de jogo', body: title + ' · ' + setScores_(g), tag: 'j' + g.id });
+    // Abandono com vencedor (desistencia) segue "venceu"; sem vencedor, a partida parou e nao acabou.
+    var parouT = !w && parado_(g);
+    events.push({ rule: 'tEnd', title: w ? w.name + ' venceu' : parouT ? 'Partida ' + parouT.toLowerCase().replace(/o$/, 'a') : 'Fim de jogo', body: title + ' · ' + setScores_(g), tag: 'j' + g.id });
   }
 }
 
@@ -1220,6 +1469,10 @@ function f1Top_(x, now) {
     var ev = (fetchJson_(ESPN_WEB + '/racing/f1/scoreboard').events || [])[0];
     var c = x._espn || (ev && ev.competitions.filter(function (s) { return Math.abs(new Date(s.date).getTime() - alvo) < 3600000; })[0]);
     var evId = x._ev || (ev && ev.id);
+    // So com a sessao encerrada na ESPN: bandeira vermelha ou atraso passam da duracao tipica,
+    // e a ordem do meio da sessao nao e resultado.
+    var est = c && c.status && c.status.type && c.status.type.state;
+    if (est !== 'post') return [];
     var lista = ((c && c.competitors) || []).slice().sort(function (u, v) { return (u.order || 99) - (v.order || 99); });
     if (!lista.length || !evId) return [];
     // Tempos da ESPN core: uma rodada so, todos os pilotos juntos.
@@ -1309,10 +1562,10 @@ function plain_(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g,
 
 // Memoria de jogos antigos: limpa ao refazer o plano, para nao estourar a cota de Properties.
 function cleanup_() {
-  var p = props_(), all = p.getProperties(), cut = Date.now() - 3 * 86400000;
+  var p = props_(), all = todas_(p), cut = Date.now() - 3 * 86400000;
   Object.keys(all).forEach(function (k) {
     if (k.indexOf('g:') === 0 || k.indexOf('f:') === 0) {
-      try { if (JSON.parse(all[k]).t < cut) p.deleteProperty(k); } catch (_) { p.deleteProperty(k); }
+      try { if (JSON.parse(all[k]).t < cut) tira_(p, k); } catch (_) { tira_(p, k); }
     }
   });
 }

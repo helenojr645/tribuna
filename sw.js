@@ -29,6 +29,12 @@ self.addEventListener('fetch', (e) => {
       return res;
     });
     e.waitUntil(rede.then(() => {}, () => {}));
+    // O prazo de 3 s vale so para abrir a pagina. Scripts e CSS esperam a rede, para nao misturar
+    // app.js novo com extras.js velho (ReferenceError) numa rede lenta logo apos uma versao nova.
+    if (e.request.mode !== 'navigate') {
+      e.respondWith(rede.catch(async () => (await caches.match(e.request)) || Response.error()));
+      return;
+    }
     e.respondWith((async () => {
       const prazo = new Promise((res) => setTimeout(() => res('prazo'), 3000));
       try {

@@ -1198,7 +1198,9 @@ function wants_(d, g, rule, now) {
 }
 
 function ruleAllowed_(d, rule, now) {
-  if (!(d.rules || DEFAULT_RULES)[rule]) return false;
+  // Aparelho cadastrado antes de uma regra nova existir segue o padrao dela.
+  var r = (d.rules || {})[rule];
+  if (!(r === undefined ? DEFAULT_RULES[rule] : r)) return false;
   if (d.spoiler && ['goal', 'red', 'ht', 'st2', 'end', 'tSet', 'tEnd', 'f1End'].indexOf(rule) >= 0) return false;
   return !inQuiet_(d, now);
 }

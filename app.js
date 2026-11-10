@@ -2224,6 +2224,9 @@ function renderNav() {
 function setMain(html) {
   const m = main();
   if (m.dataset.h === html) return;
+  // Seletor de data aberto (Jogos do dia): redesenhar fecha o seletor no iPhone.
+  const foco = document.activeElement;
+  if (foco && foco.type === 'date' && m.contains(foco)) return;
   // Chave do mata-mata: placar novo nao pode jogar de volta para a primeira coluna quem arrastou para o lado.
   const chAntes = m.querySelector('.chave'), chId = chAntes && chAntes.dataset.id;
   const lados = ['.chave', '.ch-fases'].map((s) => { const e = m.querySelector(s); return e ? e.scrollLeft : null; });

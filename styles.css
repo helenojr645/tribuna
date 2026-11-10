@@ -709,3 +709,73 @@ body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-even
 [data-tema="claro"] .folha { background: #FFFFFF; }
 .card.live { background: linear-gradient(100deg, color-mix(in srgb, var(--c1) 32%, var(--surface)) 0%, var(--surface) 46%, var(--surface) 54%, color-mix(in srgb, var(--c2) 32%, var(--surface)) 100%); }
 [data-tema="claro"] .card.live { background: linear-gradient(100deg, color-mix(in srgb, var(--c1) 26%, #fff) 0%, rgba(255, 255, 255, .9) 46%, rgba(255, 255, 255, .9) 54%, color-mix(in srgb, var(--c2) 26%, #fff) 100%); }
+
+/* ---------- Jogos por dia, pre-jogo e artilharia (10/11/2026) ---------- */
+.dia-atalho { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.dia-atalho .t2 { font-size: 14px; font-weight: 600; color: var(--muted); margin-right: 2px; }
+.dia-atalho .chip { min-height: 44px; padding: 0 16px; }
+.dia-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(52px, .9fr); gap: 6px; margin: 4px 0 10px; }
+.dia-pill { min-height: 66px; justify-content: center; text-align: center; padding: 6px 2px; overflow: hidden; }
+.dia-pill > span:first-child { white-space: nowrap; }
+.dia-pill .mes { font-size: 11px; font-weight: 600; }
+.dia-pill.sel { background: var(--ink); color: var(--bg); }
+.dia-pill.sel b { color: var(--bg); }
+.dia-escolher { position: relative; cursor: pointer; color: var(--ink-2); }
+.dia-escolher svg { width: 22px; height: 22px; margin-bottom: 2px; }
+.dia-escolher input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; font-size: 16px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.dia-escolher:focus-within { box-shadow: inset 0 0 0 2px var(--volt-t); }
+.dia-titulo { padding-top: 4px; }
+.dia-nota { font-size: 13px; color: var(--muted); margin: 0 0 10px; }
+.dia-mais { margin-top: 18px; }
+
+.pj { display: grid; gap: 10px; margin-bottom: 10px; }
+.pj-card { background: var(--surface); border-radius: var(--r); padding: 14px 16px; min-width: 0; }
+.pj-card h3 { font: 700 18px/1.2 var(--font-d); letter-spacing: -.01em; margin-bottom: 4px; }
+.pj-card .t2 { font-size: 13px; color: var(--muted); }
+.pj-sub { margin-bottom: 10px; }
+.pj-forma-l { padding: 8px 0; border-top: .5px solid var(--line); }
+.pj-card h3 + .pj-forma-l { border-top: 0; margin-top: 4px; }
+.pj-time { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 6px; font-weight: 600; }
+.pj-time span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-time small { margin-left: auto; flex: none; }
+.pj .forma { margin: 0; gap: 6px; }
+.pj .fm { width: 44px; height: 44px; border-radius: 12px; font-size: 15px; }
+.pj-placar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; text-align: center; margin-bottom: 6px; }
+.pj-placar.sem-emp { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pj-placar div { background: var(--surface-2); border-radius: 14px; padding: 10px 6px; min-width: 0; }
+.pj-placar b { display: block; font: 800 26px/1.1 var(--font-d); }
+.pj-placar small { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-jogo { display: grid; gap: 4px; min-height: 56px; padding: 8px 0; border-top: .5px solid var(--line); }
+.pj-data { display: block; min-width: 0; font-size: 12.5px; color: var(--muted); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-res { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px; font-size: 15px; color: var(--muted); }
+.pj-res span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-res span:first-child { text-align: right; }
+.pj-res span.w { color: var(--ink); font-weight: 700; }
+.pj-res b { font-weight: 800; color: var(--ink); padding: 2px 8px; border-radius: 8px; background: var(--surface-2); }
+.pj-agr-placar { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; margin: 8px 0 4px; font-weight: 700; }
+.pj-agr-placar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-agr-placar span:first-child { text-align: right; }
+.pj-agr-placar b { font: 800 30px/1 var(--font-d); }
+.pj-agr p { text-align: center; }
+.pj-ida { display: flex; align-items: center; gap: 10px; min-height: 48px; margin-top: 8px; padding-top: 6px; border-top: .5px solid var(--line); font-size: 15px; }
+.pj-ida .tn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.art-chips { margin-top: 6px; }
+.art-lista { background: var(--surface); border-radius: var(--r); overflow: hidden; }
+.art-l { display: grid; grid-template-columns: 30px 40px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 60px; padding: 8px 14px; border-bottom: .5px solid var(--line); }
+.art-l:last-child { border-bottom: 0; }
+.art-l.me { box-shadow: inset 3px 0 0 var(--volt-t); }
+.art-l .pos { font-weight: 700; color: var(--muted); font-size: 14px; text-align: center; }
+.art-l .foto, .art-l > .mono { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: var(--surface-2); }
+.art-l .nm { min-width: 0; }
+.art-l .nm b { display: block; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-l .nm small { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); min-width: 0; }
+.art-l .nm small span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-l .nm .crest { width: 16px; height: 16px; }
+.art-l .val { font: 800 24px/1 var(--font-d); text-align: right; }
+.art-l .val small { display: block; margin-top: 2px; font: 600 11px/1.2 var(--font); color: var(--muted); }
+.art-nota { font-size: 13px; color: var(--muted); margin-top: 10px; }
+[data-tema="claro"] .pj-card, [data-tema="claro"] .art-lista { box-shadow: 0 1px 2px rgba(0, 0, 0, .06); }
+[data-tema="claro"] .pj-placar div, [data-tema="claro"] .pj-res b { background: rgba(0, 0, 0, .05); }
+.anim-cards .pj-card, .anim-cards .art-lista { animation: surge .3s cubic-bezier(.2, .8, .2, 1) both; }
+@media (prefers-reduced-motion: reduce) { .anim-cards .pj-card, .anim-cards .art-lista { animation: so-fade .22s ease-out both !important; } }

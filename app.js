@@ -400,7 +400,7 @@ function spanRelogio(id, base) { return `<span class="tn" data-relogio="${Number
 function spanAte(quando, base, pref) { return `<span class="tn" data-ate="${esc(quando)}" data-base="${esc(base)}"${pref ? ` data-pref="${esc(pref)}"` : ''}>${esc(base)}</span>`; }
 
 // ---------- Animacoes de tela ----------
-const ORDEM_TELAS = { agora: 0, agenda: 1, explorar: 2, ajustes: 3, time: 4, liga: 4, f1: 4, aovivo: 4 };
+const ORDEM_TELAS = { agora: 0, agenda: 1, explorar: 2, ajustes: 3, time: 4, liga: 4, f1: 4, aovivo: 4, dia: 4 };
 function animar(el, classe, ms) {
   if (!el) return;
   // A cascata dos cartoes convive com o deslize da tela; cada familia tem seu proprio tempo.
@@ -793,6 +793,7 @@ function renderAgora() {
     ${f !== 'f1' ? section('Ao vivo', live) : ''}
     ${campsVivo.length ? section('Nos campeonatos dos seus times', campsVivo.slice(0, 6)) : ''}
     ${f !== 'f1' ? `<a class="item todos-vivo" href="#/aovivo/${f === 'ten' ? 3 : 1}"><i class="av-dot" aria-hidden="true"></i><span class="grow t1">Todos os jogos ao vivo</span>${campsVivo.length > 6 ? `<span class="muted">+${campsVivo.length - 6} nos seus campeonatos</span>` : ''}<span class="av-seta" aria-hidden="true">›</span></a>` : ''}
+    ${f !== 'f1' ? atalhoDias(f === 'ten' ? 3 : 1) : ''}
     ${showF1 && f1Weekend ? `<div class="sec"><h2>Fórmula 1</h2></div>${f1Card(ev)}` : ''}
     ${f !== 'f1' ? section('Hoje', today) : ''}
     ${f !== 'f1' ? section('Próximos', next) : ''}
@@ -877,7 +878,7 @@ function renderAgenda() {
       html += `<a class="line-item" href="#/f1"><span class="h tn">${hm(it.t)}</span><span class="mid"><span class="t1" style="display:block">${esc(ptSession(it.s.session_name))}</span><span class="t2" style="display:block">GP ${esc(F1_GP[it.s.country_name] || it.s.country_name)} · ${esc(it.s.circuit_short_name || it.s.location)}</span></span><span class="tag">F1</span></a>`;
     }
   });
-  return `${head}<div class="weekstrip">${strip}</div>${html || '<div class="empty"><b>Agenda vazia</b>Nenhum evento dos seus seguidos nos próximos dias.</div>'}
+  return `${head}${atalhoDias()}<div class="weekstrip">${strip}</div>${html || '<div class="empty"><b>Agenda vazia</b>Nenhum evento dos seus seguidos nos próximos dias.</div>'}
     <p class="muted" style="font-size:13px;margin-top:14px">Horários no fuso deste aparelho. Jogos de tênis só aparecem quando a organização publica a programação do dia.</p>`;
 }
 function lastName(n) { const p = String(n || '').trim().split(/\s+/); return n && n.includes('/') ? n : p[p.length - 1]; }
@@ -1240,12 +1241,12 @@ function renderLeague(id) {
     : '';
   // Copa sem tabela nem chave: so jogos, sem abas. Falha de rede na tabela: aviso dentro da aba.
   const podeTabela = temTabela || !L.st;
-  const abas = [['jogos', 'Jogos']].concat(podeTabela ? [['tab', 'Tabela']] : [], L.chave ? [['chave', 'Chave']] : []);
+  const abas = [['jogos', 'Jogos']].concat(podeTabela ? [['tab', 'Tabela']] : [], L.chave ? [['chave', 'Chave']] : [], temArtilharia(id) ? [['art', 'Artilharia']] : []);
   if (abas.length < 2) return `${head}${jogos || '<div class="empty">Sem jogos nem tabela no momento.</div>'}`;
   let cur = (R.ligaTab || {})[id] || (jogos ? 'jogos' : abas[1][0]);
   if (!abas.some((x) => x[0] === cur)) cur = 'jogos';
   const tabs = `<div class="tabs liga-tabs"><div class="seg" role="tablist">${abas.map(([k, t]) => `<button class="tab" role="tab" data-act="ligatab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div></div>`;
-  const corpo = cur === 'tab'
+  const corpo = cur === 'art' ? renderArtilharia(id) : cur === 'tab'
     ? (tabela || '<div class="empty">Não consegui carregar a tabela agora. Tento de novo sozinho.</div>')
     : cur === 'chave'
       ? (S.spoiler && !R.reveal.has('l' + id) ? `<div style="height:14px"></div><button class="btn" data-act="revealleague" data-v="${id}">Mostrar chave</button>` : renderChave(id, L.chave))
@@ -1568,6 +1569,7 @@ async function loadGamePrincipal(id) {
   const d = await api(`/game/?gameId=${id}`);
   R.game[id] = d;
   registrarRelogio(d.game);
+  if (d.game.statusGroup === 2) loadPreJogo(d.game).then(() => renderDetail());
   R.lastOk = Date.now(); R.failed = false;
   const tab = R.gameTab[id];
   // Numeros oficiais sempre: o selo de xG usa o oficial, mais confiavel que a soma das finalizacoes.
@@ -1716,7 +1718,7 @@ function tabGame(g, spoil) {
   const info = infoBlock(g);
   if (spoil) return spoilNote(g.id) + '<div style="height:12px"></div>' + info;
   const events = (g.events || []).filter((e) => e.eventType);
-  if (!events.length) return (g.statusGroup === 2 ? '' : painelAgora(g, R.stats[g.id])) + info + (g.statusGroup === 2 ? '' : '<div style="height:12px"></div><div class="empty">Sem lances registrados ainda.</div>');
+  if (!events.length) return (g.statusGroup === 2 ? preJogoHtml(g) : painelAgora(g, R.stats[g.id])) + info + (g.statusGroup === 2 ? '' : '<div style="height:12px"></div><div class="empty">Sem lances registrados ainda.</div>');
   const h0 = g.homeCompetitor, a0 = g.awayCompetitor;
   const pen = (g.stages || []).find((x) => /p[eê]n/i.test(`${x.name || ''} ${x.shortName || ''}`));
   const placar = [0, 0];
@@ -2110,7 +2112,7 @@ function parseHash() {
 function renderNav() {
   const r = parseHash();
   const cur = R.mainRoute.replace(/^#\//, '').split('/')[0];
-  const active = (k) => (k === cur || (k === 'explorar' && ['time', 'liga', 'f1'].includes(cur)) || (k === 'agora' && cur === 'aovivo') ? 'aria-current="page"' : '');
+  const active = (k) => (k === cur || (k === 'explorar' && ['time', 'liga', 'f1'].includes(cur)) || (k === 'agora' && cur === 'aovivo') || (k === 'agenda' && cur === 'dia') ? 'aria-current="page"' : '');
   const liveMine = R.home ? R.home.games.filter((g) => g.statusGroup === 3 && gameIsMine(g)).length : 0;
   const item = (k, ic, t, dot) => `<a class="nav-item" href="#/${k}" ${active(k)}>${ICONS[ic]}<span>${t}</span>${dot ? '<i class="nav-dot" aria-label="Ao vivo"></i>' : ''}</a>`;
   const html = `<div class="nav-brand"><img src="icons/favicon-32.png" alt="" width="28" height="28">Tribuna</div>${item('agora', 'now', 'Agora', liveMine > 0)}${item('agenda', 'cal', 'Agenda')}${item('explorar', 'search', 'Explorar')}${item('ajustes', 'gear', 'Ajustes')}`;
@@ -2172,6 +2174,7 @@ function renderMainView() {
   if (v === 'liga') return setMain(renderLeague(id));
   if (v === 'f1') return setMain(renderF1());
   if (v === 'aovivo') return setMain(renderAoVivo(id === 3 ? 3 : 1));
+  if (v === 'dia') return setMain(renderDia());
   setMain(renderAgora());
 }
 async function loadMainView() {
@@ -2180,7 +2183,8 @@ async function loadMainView() {
   if (v === 'agenda') await loadAgenda();
   else if (v === 'aovivo') await loadAoVivo(id === 3 ? 3 : 1);
   else if (v === 'time') await loadTeam(id);
-  else if (v === 'liga') await loadLeague(id);
+  else if (v === 'dia') await loadDia();
+  else if (v === 'liga') await Promise.all([loadLeague(id), loadArtilharia(id)]);
   else if (v === 'f1') await loadF1Page();
   else if (v !== 'ajustes') await loadHome();
   else return;

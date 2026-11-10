@@ -1,6 +1,6 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
-const VERSION = 'tribuna-25';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'fontes.js', 'f1vivo.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
+const VERSION = 'tribuna-26';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'extras.js', 'fontes.js', 'f1vivo.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
 const IMG_CACHE = 'tribuna-img';
 
 self.addEventListener('install', (e) => {

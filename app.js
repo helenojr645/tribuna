@@ -815,6 +815,38 @@ function freshText() {
   return R.fonte ? `reserva ${R.fonte} · ${t}` : `atualizado ${t}`;
 }
 
+// Faixa "Seus times" (17/11/2026): todo time seguido aparece na Agora, mesmo sem jogo marcado (ex.: selecao fora da data FIFA).
+function faixaTimes(games, sportOk) {
+  const times = S.teams.filter((t) => sportOk({ sportId: t.sportId || 1 }));
+  if (!times.length) return '';
+  const now = Date.now();
+  const cards = times.map((t) => {
+    const dele = games.filter((g) => g.homeCompetitor.id === t.id || g.awayCompetitor.id === t.id);
+    const vivo = dele.find((g) => g.statusGroup === 3);
+    const ult = dele.filter((g) => g.statusGroup === 4).sort((a, b) => new Date(b.startTime) - new Date(a.startTime))[0];
+    const prox = dele.filter((g) => g.statusGroup === 2 && new Date(g.startTime) > now).sort((a, b) => new Date(a.startTime) - new Date(b.startTime))[0];
+    const placar = (g) => {
+      const me = g.homeCompetitor.id === t.id ? g.homeCompetitor : g.awayCompetitor;
+      const ot = me === g.homeCompetitor ? g.awayCompetitor : g.homeCompetitor;
+      const x = num(me.score), y = num(ot.score);
+      return { txt: `${x}-${y}`, r: x > y ? 'v' : x < y ? 'd' : 'e', ot: ot.shortName || ot.name };
+    };
+    let linha;
+    if (vivo) linha = S.spoiler ? '<b class="ft-on">ao vivo</b>' : `<b class="ft-on">${placar(vivo).txt} ao vivo</b>`;
+    else if (ult && (!prox || now - new Date(ult.startTime) < 36e5 * 36)) {
+      const p = placar(ult);
+      linha = S.spoiler ? `Fim x ${esc(p.ot)}` : `<i class="ft-r ${p.r}">${p.r.toUpperCase()}</i> ${p.txt} ${esc(p.ot)}`;
+    } else if (prox) {
+      const d = new Date(prox.startTime), dl = dayLabel(prox.startTime);
+      const curto = /^(Hoje|Amanhã)$/.test(dl) ? dl : d.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' }).replace(/\./g, '');
+      linha = `${esc(curto)} ${hm(prox.startTime)}`;
+    }
+    else linha = 'sem jogo marcado';
+    return `<a class="meu ft" href="#/time/${Number(t.id)}">${crest(t, 96)}<span>${esc(t.shortName || t.name)}</span><small>${linha}</small></a>`;
+  }).join('');
+  return `<div class="sec"><h2>Seus times</h2></div><div class="meus">${cards}</div>`;
+}
+
 function renderAgora() {
   const home = R.home;
   const eyeBtn = `<button class="icon-btn ${S.spoiler ? 'on' : ''}" data-act="spoiler" aria-pressed="${S.spoiler}" aria-label="${S.spoiler ? 'Desligar' : 'Ligar'} modo sem spoiler">${S.spoiler ? ICONS.eyeOff : ICONS.eye}</button>`;
@@ -852,6 +884,7 @@ function renderAgora() {
     ${R.roboBad ? `<div class="banner">O robô de avisos está parado. Os placares daqui seguem normais, mas os avisos podem não chegar. <a href="#/ajustes" style="text-decoration:underline">Ver detalhes</a></div>` : ''}
     <p class="hero">${heroLine(mine, mine.filter((g) => g.statusGroup === 3), S.f1.on ? ev : null)}</p>
     <div class="chips" role="group" aria-label="Filtrar esporte">${chip('all', 'Tudo')}${chip('foot', 'Futebol')}${chip('ten', 'Tênis')}${S.f1.on ? chip('f1', 'Fórmula 1') : ''}</div>
+    ${f !== 'f1' ? faixaTimes(home.games, sportOk) : ''}
     ${acomp.length ? `<div class="sec"><h2>Acompanhando</h2></div><div class="stack">${acomp.map(cartaoAcompanhando).join('')}</div>` : ''}
     ${f !== 'f1' ? section('Ao vivo', live) : ''}
     ${campsVivo.length ? section('Nos campeonatos dos seus times', campsVivo.slice(0, 6)) : ''}
@@ -859,9 +892,9 @@ function renderAgora() {
     ${f !== 'f1' ? atalhoDias(f === 'ten' ? 3 : 1) : ''}
     ${showF1 && f1Weekend ? `<div class="sec"><h2>Fórmula 1</h2></div>${f1Card(ev)}` : ''}
     ${f !== 'f1' ? section('Hoje', today) : ''}
+    ${f !== 'f1' ? section('Encerrados', ended) : ''}
     ${f !== 'f1' ? section('Próximos', next) : ''}
     ${showF1 && !f1Weekend ? `<div class="sec"><h2>Fórmula 1</h2></div>${f1Card(ev)}` : ''}
-    ${f !== 'f1' ? section('Encerrados', ended) : ''}
     ${hasAny ? '' : `<div class="empty"><b>Nada por aqui ainda</b>Siga mais times ou tenistas em <a href="#/explorar" style="text-decoration:underline">Explorar</a>.</div>`}`;
 }
 

@@ -793,3 +793,10 @@ body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-even
 [data-tema="claro"] .pj-placar div, [data-tema="claro"] .pj-res b { background: rgba(0, 0, 0, .05); }
 .anim-cards .pj-card, .anim-cards .art-lista { animation: surge .3s cubic-bezier(.2, .8, .2, 1) both; }
 @media (prefers-reduced-motion: reduce) { .anim-cards .pj-card, .anim-cards .art-lista { animation: so-fade .22s ease-out both !important; } }
+
+/* Faixa "Seus times" na Agora (17/11/2026) */
+.meu.ft { width: 104px; }
+.meu.ft small { font-size: 11.5px; color: var(--muted); line-height: 1.25; display: flex; align-items: center; justify-content: center; gap: 4px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.ft-on { color: var(--volt-t, #D4F53C); font-weight: 700; }
+.ft-r { font-style: normal; font-weight: 800; font-size: 10px; width: 16px; height: 16px; border-radius: 4px; display: inline-grid; place-items: center; color: #000; }
+.ft-r.v { background: #34C759; } .ft-r.d { background: #E5333B; color: #fff; } .ft-r.e { background: #8E8E93; }

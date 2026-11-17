@@ -111,7 +111,10 @@ function colorOf(c) {
   const lum = (0.2126 * (n >> 16 & 255) + 0.7152 * (n >> 8 & 255) + 0.0722 * (n & 255)) / 255;
   return lum < 0.16 ? '#7D8891' : hex;
 }
+// Selecoes: as fontes (365Scores, FotMob, ESPN) so tem a bandeira. Escudo proprio em icons/escudos (Wikimedia Commons).
+const ESCUDOS = { 2379: 'icons/escudos/2379.png' };
 function imgUrl(kind, id, iv, size) {
+  if (kind === 'Competitors' && ESCUDOS[id]) return ESCUDOS[id];
   const s = size || 48;
   return `https://imagecache.365scores.com/image/upload/f_png,w_${s},h_${s},c_limit,q_auto:eco,dpr_2/v${Number(iv) || 1}/${kind}/${Number(id)}`;
 }

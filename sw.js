@@ -1,6 +1,6 @@
 // Service worker: abre o app rapido e recebe os avisos. Placar nunca vem de cache daqui.
-const VERSION = 'tribuna-29';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'extras.js', 'fontes.js', 'f1vivo.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png', 'icons/escudos/2379.png'];
+const VERSION = 'tribuna-30';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'extras.js', 'fontes.js', 'f1vivo.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/badge-96.png'];
 // Escudos e logos: ate 300, por ate 30 dias. O nome mudou de 'tribuna-img' para jogar fora as
 // respostas opacas antigas (404/5xx guardados para sempre).
 const IMG_CACHE = 'tribuna-img-2';

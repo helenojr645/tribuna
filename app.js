@@ -1234,7 +1234,7 @@ function renderTeam(id) {
   const tabelas = camps.filter((x) => x.tab && ativos.has(x.id) && (!sel || x.id === sel)).map((x) => {
     const n = timeNaTabela(R.standings[x.id], c);
     if (!n) return '';
-    const resumo = `${Number(n.linha.position) || ''}º de ${n.total}${n.grupo ? ' no ' + esc(n.grupo) : ''}${n.zona ? ` · <b class="zona-t" style="--z:${corOk(n.zona.color)}">${esc(n.zona.name)}${n.linha.destinationGuaranteed ? ' (garantido)' : ''}</b>` : ''}`;
+    const resumo = `${Number(n.linha.position) || ''}º de ${n.total}${n.grupo ? ' no ' + esc(n.grupo) : ''}${n.zona ? ` · <b class="zona-t" style="--z:${corOk(n.zona.color)}">${n.linha.destinationGuaranteed ? (/rebaix|relega/i.test(n.zona.name) ? 'rebaixado' : 'vaga garantida: ' + esc(n.zona.name)) : 'zona de ' + esc(n.zona.name)}</b>` : ''}`;
     return `<div class="sec"><h2>${esc(x.name)}</h2><a class="sec-link" href="#/liga/${Number(x.id)}" data-act="tabelacompleta" data-id="${Number(x.id)}" data-time="${Number(id)}">Tabela completa</a></div>
       <div class="t2 posresumo">${resumo}</div>${standingsTable(n.d, [id])}`;
   }).join('');

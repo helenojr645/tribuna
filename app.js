@@ -1379,7 +1379,7 @@ function chaveDe(d) {
   const b = bs.find((x) => x.isCurrentSeason) || bs[0];
   if (!b) return null;
   const fases = (b.stages || []).filter((s) => s.stageType === 3 && (s.groups || []).length).map((s) => ({
-    nome: String(s.name || '').trim(), atual: !!s.isCurrentStage,
+    nome: String(s.name || '').trim(), atual: !!s.isCurrentStage, num: s.num,
     confrontos: s.groups.map((g) => {
       const jogos = (g.games || []).map((x) => x.game ? { ...x.game, pen: x.penaltyScore } : { id: x.gameId, startTime: x.startTime, statusGroup: 2 }).filter((x) => x.id);
       const iv = {};
@@ -1396,12 +1396,17 @@ function chaveDe(d) {
   }));
   return fases.some((f) => f.confrontos.some((x) => x.lados.some((l) => l.id))) ? { fases } : null;
 }
-function renderChave(id, ch) {
+// Jogo de mata-mata: a fase dele esta na chave do campeonato (stageType 3). Ai a aba do jogo e Chave, nao Tabela de grupos.
+function faseDoJogo(g) {
+  const c = g && g.hasBrackets && R.chaves[g.competitionId];
+  return c && c.v && g.stageNum != null ? c.v.fases.findIndex((f) => f.num === g.stageNum) : -1;
+}
+function renderChave(id, ch, faseIni) {
   const fases = ch.fases;
-  const atual = Math.max(0, fases.findIndex((f) => f.atual));
+  const atual = faseIni != null && faseIni >= 0 ? faseIni : Math.max(0, fases.findIndex((f) => f.atual));
   // Comeca nas oitavas (ou na primeira fase com ate 8 confrontos), salvo se o torneio ainda estiver antes delas.
   const oitavas = fases.findIndex((f) => f.confrontos.length <= 8);
-  const padrao = Math.min(atual, oitavas < 0 ? atual : oitavas);
+  const padrao = faseIni != null && faseIni >= 0 ? faseIni : Math.min(atual, oitavas < 0 ? atual : oitavas);
   const ini = Math.min(R.chaveIni[id] != null ? R.chaveIni[id] : padrao, fases.length - 1);
   const meus = S.teams.map((t) => t.id);
   const lado = (l, decidido) => `<div class="ch-l${l.passou ? ' ok' : decidido ? ' fora' : ''}${meus.includes(l.id) ? ' me' : ''}">${l.id ? crest({ id: l.id, imageVersion: l.iv, name: l.nome }) : '<i class="ch-vazio"></i>'}<em>${esc(l.nome)}</em><b class="tn">${l.gols == null ? '' : l.gols}</b></div>`;
@@ -1691,7 +1696,8 @@ async function completarEncerrado(id) {
   if (!R.stats[id] && id < 7e8 && Date.now() >= R.primaryDownUntil && (tab === 'num' || tab == null || tab === 'jogo' || g.sportId === 3)) {
     R.stats[id] = await api(`/game/stats/?games=${id}`).catch(() => R.stats[id]);
   }
-  if (tab === 'tab' && g.competitionId && !R.standings[g.competitionId]) await loadStandings(g.competitionId).catch(() => {});
+  if (g.hasBrackets && g.competitionId) await loadChave(g.competitionId).catch(() => {});
+  if (tab === 'tab' && faseDoJogo(g) < 0 && g.competitionId && !R.standings[g.competitionId]) await loadStandings(g.competitionId).catch(() => {});
 }
 function loadGame(id) {
   if (encerradoGuardado(id)) return completarEncerrado(id);
@@ -1715,7 +1721,8 @@ async function loadGamePrincipal(id) {
   if (tab === 'num' || tab == null || tab === 'jogo' || d.game.sportId === 3) {
     R.stats[id] = await api(`/game/stats/?games=${id}`).catch(() => R.stats[id]);
   }
-  if (tab === 'tab' && !R.standings[d.game.competitionId]) {
+  if (d.game.hasBrackets && d.game.competitionId) await loadChave(d.game.competitionId).catch(() => {});
+  if (tab === 'tab' && faseDoJogo(d.game) < 0 && !R.standings[d.game.competitionId]) {
     await loadStandings(d.game.competitionId).catch(() => {});
   }
 }
@@ -1738,8 +1745,11 @@ function renderGame(id) {
     const tag = c.id ? `a class="d-team" href="#/time/${Number(c.id)}"` : 'div class="d-team"';
     return `<${tag}><img class="${tennis ? 'round' : ''}" alt="" width="76" height="76" data-mono="${esc(initials(c.name))}" src="${esc(c.logo || imgUrl('Competitors', c.id, c.imageVersion, 96))}"><span>${esc(c.shortName || c.name)}${c.rankings && c.rankings[0] ? `<br><small class="muted tn" style="font-weight:500">${esc(c.rankings[0].name)} ${c.rankings[0].position}</small>` : ''}</span></${c.id ? 'a' : 'div'}>`;
   };
-  const tabsDef = tennis ? [['jogo', 'Jogo']] : [['jogo', 'Jogo'], ['num', 'Números'], ['esc', 'Escalações'], ...(g.hasStandings ? [['tab', 'Tabela']] : [])];
-  const cur = R.gameTab[id] || 'jogo';
+  const fase = tennis ? -1 : faseDoJogo(g);
+  const tabsDef = tennis ? [['jogo', 'Jogo']] : [['jogo', 'Jogo'], ['num', 'Números'], ['esc', 'Escalações'], ...(fase >= 0 ? [['chave', 'Chave']] : g.hasStandings ? [['tab', 'Tabela']] : [])];
+  let cur = R.gameTab[id] || 'jogo';
+  if (cur === 'tab' && fase >= 0) cur = 'chave';
+  if (cur === 'chave' && fase < 0) cur = g.hasStandings ? 'tab' : 'jogo';
   const tabs = tabsDef.length > 1 ? `<div class="tabs"><div class="seg" role="tablist">${tabsDef.map(([k, t]) => `<button class="tab" role="tab" data-act="gtab" data-id="${id}" data-v="${k}" aria-selected="${cur === k}">${t}</button>`).join('')}</div></div>` : '';
   const showScorers = !tennis && !spoil && !soon;
   const hs = showScorers ? scorers(h.id) : '', as = showScorers ? scorers(a.id) : '';
@@ -1747,7 +1757,8 @@ function renderGame(id) {
   if (tennis) body = tabTennis(g, id, spoil);
   else if (cur === 'num') body = spoil ? spoilNote(g.id) : tabStats(g, id);
   else if (cur === 'esc') body = tabLineups(g);
-  else if (cur === 'tab' && spoil) body = spoilNote(g.id);
+  else if ((cur === 'tab' || cur === 'chave') && spoil) body = spoilNote(g.id);
+  else if (cur === 'chave') body = `<div class="d-chave">${renderChave(g.competitionId, R.chaves[g.competitionId].v, fase > 0 && fase === R.chaves[g.competitionId].v.fases.length - 1 ? fase - 1 : fase)}</div>`;
   else if (cur === 'tab') body = R.standings[g.competitionId] ? standingsTable(R.standings[g.competitionId], [h.id, a.id]) : '<div class="skeleton"></div>';
   else body = tabGame(g, spoil);
   return `<div class="d-head" style="--c1:${colorOf(h.color)};--c2:${colorOf(a.color)}">${bar(esc(g.competitionDisplayName || ''))}
